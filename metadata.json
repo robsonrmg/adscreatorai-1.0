@@ -1,0 +1,8 @@
+{
+  "name": "AdsCreator AI",
+  "description": "SaaS para afiliados que gera páginas Presell, Reviews, Advertoriais, Landing Pages e Bridge Pages otimizadas conversão usando IA a partir de qualquer URL.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
