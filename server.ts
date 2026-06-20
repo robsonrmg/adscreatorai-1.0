@@ -55,6 +55,15 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 const serverSupabaseKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
 const supabase = (SUPABASE_URL && serverSupabaseKey) ? createClient(SUPABASE_URL, serverSupabaseKey) : null;
 
+function logSupabaseSync(action: string, error: any) {
+  const errMsg = error?.message || String(error);
+  if (errMsg.toLowerCase().includes("fetch failed") || errMsg.toLowerCase().includes("failed to fetch") || errMsg.toLowerCase().includes("timeout") || errMsg.toLowerCase().includes("networkerror")) {
+    console.log(`[Supabase Async Sync] ${action}: Supabase de contingência offline (fetch failed).`);
+  } else {
+    console.log(`[Supabase Async Sync] ${action} falhou:`, errMsg);
+  }
+}
+
 // Tentar criar ou garantir a existência do bucket 'page-media' de forma pública no Supabase
 async function ensureBucketExists() {
   if (supabase && SUPABASE_URL && SUPABASE_ANON_KEY) {
@@ -119,7 +128,7 @@ async function checkAndResetProjectCounters() {
         console.log("[Supabase Connection] Contadores iniciais limpos com sucesso!");
       }
     } catch (err: any) {
-      console.warn("[Supabase Connection] Não foi possível redefinir os contadores de demonstração:", err.message || err);
+      logSupabaseSync("Redefinição de contadores", err);
     }
   }
 }
@@ -617,11 +626,11 @@ async function extractAndDownloadImages(productUrl: string, affiliateUrl: string
             servedUrl = publicUrlData?.publicUrl || "";
             console.log(`[Supabase Storage] Objeto sincronizado com sucesso: ${servedUrl}`);
           } else {
-            console.warn(`[Supabase Storage Info] Detalhe de permissão/bucket:`, uploadError);
+            logSupabaseSync("Upload para o storage", uploadError);
             console.info(`[Supabase Storage Fallback] Ativando fallback de armazenamento local para garantir o funcionamento imediato.`);
           }
         } catch (supabaseErr: any) {
-          console.warn(`[Supabase Storage] Nota na transmissão de imagem:`, supabaseErr);
+          logSupabaseSync("Transmissão de imagem para o storage", supabaseErr);
         }
       }
 
@@ -1504,12 +1513,12 @@ app.post("/api/auth/register", async (req, res) => {
             subdomain: newUser.subdomain
           });
           if (error) {
-            console.warn("[Supabase Register Sync Warning] Erro inserindo perfil:", error.message);
+            logSupabaseSync("Inserção de perfil", error);
           } else {
             console.log("[Supabase Register Sync] Perfil do usuário gerado e salvo no Supabase!");
           }
         } catch (sbErr: any) {
-          console.warn("[Supabase Register Sync Exceção] Sincronização remota pendente:", sbErr.message || sbErr);
+          logSupabaseSync("Sincronização remota pendente de perfil", sbErr);
         }
       })();
     }
@@ -1659,7 +1668,7 @@ app.post("/api/profile/domain", async (req, res) => {
         });
       }
     } catch (err: any) {
-      console.warn("[Supabase Profiles] Falha ao sincronizar alteração de domínio:", err.message || err);
+      logSupabaseSync("Sincronizar alteração de domínio", err);
     }
   }
 
@@ -1755,7 +1764,7 @@ app.post("/api/profile/plan", async (req, res) => {
         });
       }
     } catch (err: any) {
-      console.warn("[Supabase Profiles] Falha ao sincronizar alteração de plano:", err.message || err);
+      logSupabaseSync("Sincronizar alteração de plano", err);
     }
   }
 
@@ -1794,7 +1803,7 @@ app.post("/api/profile/update", async (req, res) => {
         });
       }
     } catch (err: any) {
-      console.warn("[Supabase Profiles] Falha ao sincronizar atualização de detalhes do perfil:", err.message || err);
+      logSupabaseSync("Sincronizar atualização de perfil", err);
     }
   }
 
@@ -1930,10 +1939,10 @@ app.post("/api/pages", async (req, res) => {
           .insert([sbPage]);
 
         if (error) {
-          console.warn("[Supabase Pages] Erro ao inserir no Supabase:", error.message);
+          logSupabaseSync("Inserir página no Supabase", error);
         }
       } catch (sbErr: any) {
-        console.warn("[Supabase Pages] Exceção na sincronização do Supabase:", sbErr.message || sbErr);
+        logSupabaseSync("Inserir página no Supabase (exceção)", sbErr);
       }
     }
 
@@ -1980,13 +1989,13 @@ app.put("/api/pages/:id", (req, res) => {
           html_content: htmlContent
         }).eq("id", id).then(({ error }) => {
           if (error) {
-            console.warn("[Supabase Pages] Erro ao sincronizar edição no Supabase:", error.message);
+            logSupabaseSync("Sincronizar edição de página", error);
           } else {
             console.log(`[Supabase Pages] Edição sincronizada com sucesso para id: ${id}`);
           }
         });
       } catch (sbErr: any) {
-        console.warn("[Supabase Pages] Exceção ao sincronizar edição:", sbErr.message || sbErr);
+        logSupabaseSync("Sincronizar edição de página (exceção)", sbErr);
       }
     }
 
@@ -2040,13 +2049,13 @@ app.post("/api/pages/:id/duplicate", (req, res) => {
         };
         supabase.from("pages").insert([sbPage]).then(({ error }) => {
           if (error) {
-            console.warn("[Supabase Pages] Erro no sync de duplicação:", error.message);
+            logSupabaseSync("Duplicação de página", error);
           } else {
             console.log(`[Supabase Pages] Duplicação sincronizada no Supabase: ${duplicate.slug}`);
           }
         });
       } catch (sbErr: any) {
-        console.warn("[Supabase Pages] Exceção após duplicação:", sbErr.message || sbErr);
+        logSupabaseSync("Duplicação de página (exceção)", sbErr);
       }
     }
 
@@ -2113,11 +2122,11 @@ app.post("/api/pages/import", (req, res) => {
         };
         supabase.from("pages").insert([sbPage]).then(({ error }) => {
           if (error) {
-            console.warn("[Supabase Pages] Erro no sync da importação:", error.message);
+            logSupabaseSync("Importação de página", error);
           }
         });
       } catch (sbErr: any) {
-        console.warn("[Supabase Pages] Exceção após importação:", sbErr.message || sbErr);
+        logSupabaseSync("Importação de página (exceção)", sbErr);
       }
     }
 
@@ -2143,13 +2152,13 @@ app.delete("/api/pages/:id", (req, res) => {
       try {
         supabase.from("pages").delete().eq("id", id).then(({ error }) => {
           if (error) {
-            console.warn("[Supabase Pages] Erro no sync de exclusão:", error.message);
+            logSupabaseSync("Exclusão de página", error);
           } else {
             console.log(`[Supabase Pages] Remoção sincronizada no Supabase id: ${id}`);
           }
         });
       } catch (sbErr: any) {
-        console.warn("[Supabase Pages] Exceção na sincronização de exclusão:", sbErr.message || sbErr);
+        logSupabaseSync("Exclusão de página (exceção)", sbErr);
       }
     }
 
@@ -2273,12 +2282,12 @@ app.post("/api/pages/generate", async (req, res) => {
           .insert([sbPage]);
 
         if (error) {
-          console.warn("[Supabase Pages] Erro no sync da página gerada automaticamente:", error.message);
+          logSupabaseSync("Página gerada automaticamente", error);
         } else {
           console.log(`[Supabase Pages] Página gerada sincronizada com sucesso: ${newPage.slug}`);
         }
       } catch (sbErr: any) {
-        console.warn("[Supabase Pages] Exceção na sincronização automática do Supabase:", sbErr.message || sbErr);
+        logSupabaseSync("Página gerada automaticamente (exceção)", sbErr);
       }
     }
 
