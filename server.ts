@@ -8,6 +8,15 @@ import dotenv from "dotenv";
 // 1. Importar o cliente do Supabase
 import { createClient } from "@supabase/supabase-js";
 
+// Registrar gerenciadores de exceção global para garantir que o processo nunca caia de forma inesperada (ex: problemas na rede com Supabase)
+process.on("unhandledRejection", (reason, promise) => {
+  console.warn("⚠️ Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("❌ Uncaught Exception:", error);
+});
+
 dotenv.config({ override: true });
 
 const app = express();

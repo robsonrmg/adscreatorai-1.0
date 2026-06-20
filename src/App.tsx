@@ -525,6 +525,20 @@ export default function App() {
   const currentCount = pages.length;
   const limitReached = currentCount >= limit;
 
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-green-400 selection:text-slate-950 flex items-center justify-center">
+        {toastMessage && (
+          <div className="fixed bottom-6 right-6 bg-slate-900 border border-green-500/50 text-white rounded-xl py-3 px-5 shadow-2xl flex items-center gap-3 z-50 animate-fade-in font-sans max-w-sm">
+            <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
+            <span className="text-xs font-semibold">{toastMessage}</span>
+          </div>
+        )}
+        <LoginScreen onLogin={handleLogin} />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-green-400 selection:text-slate-950">
       
