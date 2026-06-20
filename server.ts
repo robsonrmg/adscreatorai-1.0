@@ -147,10 +147,26 @@ app.use("/storage", express.static(STORAGE_DIR));
 
 const DB_FILE = path.join(process.cwd(), "db.json");
 
+// Cache em memória para evitar falhas em sistemas de arquivos somente-leitura (como o Vercel)
+let memoryCacheDB: any = null;
+
 // Helper to read database
 function readDB() {
-  if (!fs.existsSync(DB_FILE)) {
-    const initialDB = {
+  if (memoryCacheDB) {
+    return memoryCacheDB;
+  }
+
+  let dbData: any = null;
+  if (fs.existsSync(DB_FILE)) {
+    try {
+      dbData = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    } catch (e: any) {
+      console.error("Erro ao ler db.json:", e);
+    }
+  }
+
+  if (!dbData) {
+    dbData = {
       profile: {
         name: "Afiliado Autoridade",
         email: "ribeiromoreira91@gmail.com",
@@ -296,36 +312,45 @@ function readDB() {
         tiktokPixelId: ""
       }
     };
-    fs.writeFileSync(DB_FILE, JSON.stringify(initialDB, null, 2), "utf-8");
-    return initialDB;
-  }
-  try {
-    const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
-    if (data && !data.users) {
-      data.users = [
-        {
-          id: "1",
-          name: data.profile?.name || "Ribeiromoreira91",
-          email: data.profile?.email || "ribeiromoreira91@gmail.com",
-          password: "123",
-          planId: data.profile?.planId || "pro",
-          subdomain: data.profile?.subdomain || "ribeiros-ads.adscreator.ai",
-          avatarUrl: data.profile?.avatarUrl || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80"
-        }
-      ];
-      fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
+    try {
+      fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2), "utf-8");
+    } catch (err: any) {
+      console.warn("Aviso: Falha ao salvar banco inicial em disco (normal em Vercel read-only):", err.message);
     }
-    return data;
-  } catch (e) {
-    return {
-      users: []
-    };
   }
+
+  // Garante que o usuário padrão existe para o correto login
+  if (dbData && (!dbData.users || dbData.users.length === 0)) {
+    dbData.users = [
+      {
+        id: "1",
+        name: dbData.profile?.name || "Ribeiromoreira91",
+        email: dbData.profile?.email || "ribeiromoreira91@gmail.com",
+        password: "123",
+        planId: dbData.profile?.planId || "pro",
+        subdomain: dbData.profile?.subdomain || "ribeiros-ads.adscreator.ai",
+        avatarUrl: dbData.profile?.avatarUrl || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80"
+      }
+    ];
+    try {
+      fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2), "utf-8");
+    } catch (err: any) {
+      console.warn("Aviso: Falha ao salvar usuário padrão no db.json em disco:", err.message);
+    }
+  }
+
+  memoryCacheDB = dbData;
+  return memoryCacheDB;
 }
 
 // Helper to write database
 function writeDB(data: any) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
+  memoryCacheDB = data;
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (error: any) {
+    console.warn("Aviso: Falha ao salvar db.json em disco (sistema de arquivos somente-leitura). As alterações ficarão apenas em memória temporária para este container:", error.message);
+  }
 }
 
 // LAZY Initialization of Gemini client
