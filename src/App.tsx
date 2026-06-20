@@ -303,25 +303,49 @@ export default function App() {
     triggerToast("Você desconectou da sua conta.");
   };
 
-  const handleLogin = async (name: string, email: string, avatarUrl: string): Promise<boolean> => {
+  const handleLoginSubmit = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch('/api/profile/update', {
+      const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, avatarUrl }),
+        body: JSON.stringify({ email, password }),
       });
+      const data = await res.json();
       if (res.ok) {
-        setProfile(await res.json());
+        setProfile(data);
         localStorage.setItem('ads_is_logged_in', 'true');
         setIsLoggedIn(true);
-        triggerToast(`Sessão iniciada com sucesso, ${name}!`);
+        triggerToast(`Boas-vindas de volta, ${data.name}!`);
         fetchData();
-        return true;
+        return { success: true };
       }
-      return false;
+      return { success: false, error: data.error || "E-mail ou senha incorretos." };
     } catch (err) {
       console.error(err);
-      return false;
+      return { success: false, error: "Erro de conexão ao servidor." };
+    }
+  };
+
+  const handleRegisterSubmit = async (name: string, email: string, password: string, avatarUrl: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password, avatarUrl }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setProfile(data);
+        localStorage.setItem('ads_is_logged_in', 'true');
+        setIsLoggedIn(true);
+        triggerToast(`Conta criada com sucesso, ${name}!`);
+        fetchData();
+        return { success: true };
+      }
+      return { success: false, error: data.error || "Erro ao criar conta." };
+    } catch (err) {
+      console.error(err);
+      return { success: false, error: "Erro de conexão ao servidor." };
     }
   };
 
@@ -330,18 +354,14 @@ export default function App() {
       triggerToast("Por favor, insira um e-mail válido!");
       return;
     }
-    if (password && password.length < 4) {
-      triggerToast("A senha deve ter pelo menos 4 caracteres!");
+    if (!password || password.length < 3) {
+      triggerToast("A senha deve ter pelo menos 3 caracteres!");
       return;
     }
-    const nameFromEmail = email.split('@')[0];
-    const capitalizedName = nameFromEmail.charAt(0).toUpperCase() + nameFromEmail.slice(1);
     
-    const success = await handleLogin(capitalizedName, email, "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80");
-    if (success) {
-      triggerToast(`Painel acessado com sucesso!`);
-    } else {
-      triggerToast("Erro ao efetuar login. Tente novamente.");
+    const res = await handleLoginSubmit(email, password);
+    if (!res.success) {
+      triggerToast(res.error || "Erro ao efetuar login. Tente novamente.");
     }
   };
 
@@ -534,7 +554,7 @@ export default function App() {
             <span className="text-xs font-semibold">{toastMessage}</span>
           </div>
         )}
-        <LoginScreen onLogin={handleLogin} />
+        <LoginScreen onLogin={handleLoginSubmit} onRegister={handleRegisterSubmit} />
       </div>
     );
   }

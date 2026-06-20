@@ -283,9 +283,26 @@ function readDB() {
     return initialDB;
   }
   try {
-    return JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    if (data && !data.users) {
+      data.users = [
+        {
+          id: "1",
+          name: data.profile?.name || "Ribeiromoreira91",
+          email: data.profile?.email || "ribeiromoreira91@gmail.com",
+          password: "123",
+          planId: data.profile?.planId || "pro",
+          subdomain: data.profile?.subdomain || "ribeiros-ads.adscreator.ai",
+          avatarUrl: data.profile?.avatarUrl || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80"
+        }
+      ];
+      fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
+    }
+    return data;
   } catch (e) {
-    return {};
+    return {
+      users: []
+    };
   }
 }
 
@@ -1385,6 +1402,112 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
 // ----------------------------------------------------
 // API ROUTES FOR ADS CREATOR SAAS
 // ----------------------------------------------------
+
+// Registrar novo usuário localmente (com sync opcional ao Supabase se configurado)
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const { name, email, password, avatarUrl } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: "Nome completo, e-mail e senha são obrigatórios." });
+    }
+
+    const db = readDB();
+    const emailLower = email.trim().toLowerCase();
+    
+    db.users = db.users || [];
+    const existingUser = db.users.find((u: any) => u.email.trim().toLowerCase() === emailLower);
+    if (existingUser) {
+      return res.status(400).json({ error: "Este endereço de e-mail já está cadastrado." });
+    }
+
+    const newUser = {
+      id: Math.random().toString(36).substring(2, 9),
+      name: name.trim(),
+      email: emailLower,
+      password: password,
+      planId: "starter",
+      pagesCreatedCount: 0,
+      subdomain: `${name.trim().toLowerCase().replace(/[^a-z0-9]/g, "")}-ads.adscreator.ai`,
+      avatarUrl: avatarUrl || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80"
+    };
+
+    db.users.push(newUser);
+    
+    db.profile = {
+      name: newUser.name,
+      email: newUser.email,
+      planId: newUser.planId,
+      pagesCreatedCount: newUser.pagesCreatedCount,
+      subdomain: newUser.subdomain,
+      avatarUrl: newUser.avatarUrl
+    };
+
+    writeDB(db);
+
+    addLog("Cadastro de Conta", `Novo usuário registrado: ${newUser.name} (${newUser.email})`);
+
+    if (supabase) {
+      try {
+        await supabase.from("profiles").insert({
+          name: newUser.name,
+          email: newUser.email,
+          plan_id: newUser.planId,
+          pages_created_count: newUser.pagesCreatedCount,
+          subdomain: newUser.subdomain
+        });
+      } catch (err: any) {
+        console.warn("[Supabase Register Sync Warning] Falha na sincronização:", err.message || err);
+      }
+    }
+
+    return res.status(201).json(db.profile);
+  } catch (err: any) {
+    console.error("Erro no cadastro:", err);
+    return res.status(500).json({ error: "Falha de servidor ao processar o cadastro." });
+  }
+});
+
+// Realizar Login de usuário localmente
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: "E-mail e senha são obrigatórios." });
+    }
+
+    const db = readDB();
+    const emailLower = email.trim().toLowerCase();
+
+    db.users = db.users || [];
+    const user = db.users.find((u: any) => u.email.trim().toLowerCase() === emailLower);
+    
+    if (!user) {
+      return res.status(404).json({ error: "Usuário com este e-mail não foi encontrado." });
+    }
+
+    if (user.password !== password) {
+      return res.status(401).json({ error: "Senha incorreta. Tente novamente." });
+    }
+
+    db.profile = {
+      name: user.name,
+      email: user.email,
+      planId: user.planId || "starter",
+      pagesCreatedCount: user.pagesCreatedCount || 0,
+      subdomain: user.subdomain || `${user.name.toLowerCase().replace(/[^a-z0-9]/g, "")}-ads.adscreator.ai`,
+      avatarUrl: user.avatarUrl || "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80"
+    };
+
+    writeDB(db);
+
+    addLog("Login Realizado", `Acesso feito por: ${user.name} (${user.email})`);
+
+    return res.json(db.profile);
+  } catch (err: any) {
+    console.error("Erro no login:", err);
+    return res.status(500).json({ error: "Falha de servidor ao processar o login." });
+  }
+});
 
 // Get Profile Info
 app.get("/api/profile", async (req, res) => {
