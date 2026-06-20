@@ -136,12 +136,12 @@ export default function App() {
                 }
               }
             } catch (backupErr) {
-              console.error("Erro restaurando backup local:", backupErr);
+              console.log("Erro restaurando backup local:", backupErr);
             }
           }
         }
       } catch (err) {
-        console.error("Erro ao carregar paginas:", err);
+        console.log("Erro ao carregar paginas:", err);
       }
 
       try {
@@ -158,7 +158,7 @@ export default function App() {
           });
         }
       } catch (err) {
-        console.error("Erro ao carregar perfil, usando padrao:", err);
+        console.log("Perfil offline:", err);
         setProfile({
           name: "Afiliado Autoridade",
           email: "ribeiromoreira91@gmail.com",
@@ -176,7 +176,7 @@ export default function App() {
           setPixels({});
         }
       } catch (err) {
-        console.error("Erro ao carregar pixel settings:", err);
+        console.log("Erro ao carregar pixel settings:", err);
         setPixels({});
       }
 
@@ -184,10 +184,10 @@ export default function App() {
         const logRes = await fetch('/api/logs');
         if (logRes.ok) setLogs(await logRes.json());
       } catch (err) {
-        console.error("Erro ao carregar logs:", err);
+        console.log("Erro ao carregar logs:", err);
       }
     } catch (e) {
-      console.error("Erro de sincronização de dados fullstack: ", e);
+      console.log("Erro de sincronização de dados fullstack: ", e);
     } finally {
       setIsLoading(false);
     }
@@ -310,7 +310,13 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        data = { error: `Servidor retornou resposta não-JSON (Status ${res.status}): ${text.slice(0, 100)}` };
+      }
       if (res.ok) {
         setProfile(data);
         localStorage.setItem('ads_is_logged_in', 'true');
@@ -320,9 +326,9 @@ export default function App() {
         return { success: true };
       }
       return { success: false, error: data.error || "E-mail ou senha incorretos." };
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      return { success: false, error: "Erro de conexão ao servidor." };
+      return { success: false, error: `Erro de conexão ao servidor: ${err.message || 'Sem sinal de rede.'} Verifique sua internet.` };
     }
   };
 
@@ -333,7 +339,13 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email, password, avatarUrl }),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        data = { error: `Servidor retornou resposta não-JSON (Status ${res.status}): ${text.slice(0, 100)}` };
+      }
       if (res.ok) {
         setProfile(data);
         localStorage.setItem('ads_is_logged_in', 'true');
@@ -343,9 +355,9 @@ export default function App() {
         return { success: true };
       }
       return { success: false, error: data.error || "Erro ao criar conta." };
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      return { success: false, error: "Erro de conexão ao servidor." };
+      return { success: false, error: `Erro de conexão ao servidor: ${err.message || 'Sem sinal de rede.'} Verifique sua internet.` };
     }
   };
 

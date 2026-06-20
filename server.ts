@@ -74,12 +74,20 @@ async function ensureBucketExists() {
       });
 
       if (error) {
-        console.log(`[Supabase Storage] Nota: Buckets podem necessitar de criação manual ou de políticas adicionais no painel do seu Supabase. Detalhe:`, error.message);
+        if (error.message && error.message.includes("fetch failed")) {
+          console.log("[Supabase Storage] Supabase offline ou inacessível no momento.");
+        } else {
+          console.log(`[Supabase Storage] Bucket 'page-media' status:`, error.message);
+        }
       } else {
         console.log(`[Supabase Storage] Bucket 'page-media' criado com sucesso de modo público.`);
       }
     } catch (e: any) {
-      console.warn(`[Supabase Storage] Nota na inicialização automática do bucket 'page-media':`, e.message || e);
+      if (e.message && e.message.includes("fetch failed")) {
+        console.log("[Supabase Storage] Supabase offline ou inacessível no momento.");
+      } else {
+        console.log(`[Supabase Storage] Nota na inicialização automática do bucket 'page-media':`, e.message || e);
+      }
     }
   }
 }
@@ -1403,6 +1411,44 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
 // API ROUTES FOR ADS CREATOR SAAS
 // ----------------------------------------------------
 
+// Obter status de conexão com o Supabase de forma proativa para informar o gestor
+app.get("/api/auth/status", async (req, res) => {
+  try {
+    if (!supabase || !SUPABASE_URL) {
+      return res.json({
+        supabaseConfigured: false,
+        supabaseStatus: "offline",
+        supabaseMessage: "O Supabase não está configurado nesta instância. O AdsCreator AI está operando de forma 100% autônoma usando o banco local db.json."
+      });
+    }
+
+    // Faz um teste rápido de conectividade com timeout curto (1.5 segundos)
+    const testPromise = supabase.from("profiles").select("count", { count: "exact", head: true });
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout de conexão")), 1500));
+    
+    try {
+      await Promise.race([testPromise, timeoutPromise]);
+      return res.json({
+        supabaseConfigured: true,
+        supabaseStatus: "online",
+        supabaseMessage: "Banco do Supabase conectado com sucesso em tempo real."
+      });
+    } catch (testErr: any) {
+      return res.json({
+        supabaseConfigured: true,
+        supabaseStatus: "offline",
+        supabaseMessage: `Falta de resposta do Supabase (${testErr.message || 'limite de tempo excedido'}). Sistema utilizando contingência e cache db.json.`
+      });
+    }
+  } catch (err: any) {
+    return res.json({
+      supabaseConfigured: true,
+      supabaseStatus: "offline",
+      supabaseMessage: "Erro ao autenticar o status com o Supabase. Usando o banco local integrado."
+    });
+  }
+});
+
 // Registrar novo usuário localmente (com sync opcional ao Supabase se configurado)
 app.post("/api/auth/register", async (req, res) => {
   try {
@@ -1447,17 +1493,25 @@ app.post("/api/auth/register", async (req, res) => {
     addLog("Cadastro de Conta", `Novo usuário registrado: ${newUser.name} (${newUser.email})`);
 
     if (supabase) {
-      try {
-        await supabase.from("profiles").insert({
-          name: newUser.name,
-          email: newUser.email,
-          plan_id: newUser.planId,
-          pages_created_count: newUser.pagesCreatedCount,
-          subdomain: newUser.subdomain
-        });
-      } catch (err: any) {
-        console.warn("[Supabase Register Sync Warning] Falha na sincronização:", err.message || err);
-      }
+      // Sincronização em segundo plano não-bloqueante de perfis no Supabase via IIFE assíncrona
+      (async () => {
+        try {
+          const { error } = await supabase.from("profiles").insert({
+            name: newUser.name,
+            email: newUser.email,
+            plan_id: newUser.planId,
+            pages_created_count: newUser.pagesCreatedCount,
+            subdomain: newUser.subdomain
+          });
+          if (error) {
+            console.warn("[Supabase Register Sync Warning] Erro inserindo perfil:", error.message);
+          } else {
+            console.log("[Supabase Register Sync] Perfil do usuário gerado e salvo no Supabase!");
+          }
+        } catch (sbErr: any) {
+          console.warn("[Supabase Register Sync Exceção] Sincronização remota pendente:", sbErr.message || sbErr);
+        }
+      })();
     }
 
     return res.status(201).json(db.profile);
@@ -1534,8 +1588,12 @@ app.get("/api/profile", async (req, res) => {
         if (!error && data) {
           supabaseProfile = data;
         }
-      } catch (err) {
-        console.warn("[Supabase Profiles] Erro ao carregar perfil, usando local:", err);
+      } catch (err: any) {
+        if (err.message && err.message.includes("fetch failed")) {
+          console.log("[Supabase Profiles] Conexão indisponível, usando cache perfil local.");
+        } else {
+          console.log("[Supabase Profiles] Erro ao carregar perfil, usando local:", err.message || err);
+        }
       }
     }
 
@@ -1798,7 +1856,11 @@ app.get("/api/pages", async (req, res) => {
         return res.json(freshDb.pages);
       }
     } catch (err: any) {
-      console.warn("[Supabase Pages] Erro ao carregar páginas do Supabase, usando locais:", err.message || err);
+      if (err.message && err.message.includes("fetch failed")) {
+        console.log("[Supabase Pages] Conexão indisponível, usando páginas locais.");
+      } else {
+        console.log("[Supabase Pages] Erro ao carregar páginas do Supabase, usando locais:", err.message || err);
+      }
     }
 
     return res.json(localPages);

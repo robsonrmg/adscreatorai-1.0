@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { User, Mail, Check, LogIn, Sparkles, Loader2, Upload, Lock, ShieldCheck, UserPlus } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { User, Mail, Check, LogIn, Sparkles, Loader2, Upload, Lock, ShieldCheck, UserPlus, Globe, CloudLightning } from 'lucide-react';
 
 interface LoginScreenProps {
   onLogin: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
@@ -56,6 +56,38 @@ export default function LoginScreen({ onLogin, onRegister }: LoginScreenProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Diagnostics state
+  const [supabaseStatus, setSupabaseStatus] = useState<{
+    configured: boolean;
+    status: 'online' | 'offline';
+    message: string;
+  } | null>(null);
+
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const res = await fetch('/api/auth/status');
+        if (res.ok) {
+          const data = await res.json();
+          setSupabaseStatus(data);
+        } else {
+          setSupabaseStatus({
+            configured: true,
+            status: 'offline',
+            message: 'O servidor não conseguiu responder com o status de autenticação.'
+          });
+        }
+      } catch (err) {
+        setSupabaseStatus({
+          configured: true,
+          status: 'offline',
+          message: 'As APIs de diagnóstico do micro-SaaS estão temporariamente inacessíveis.'
+        });
+      }
+    };
+    checkStatus();
+  }, []);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -160,6 +192,30 @@ export default function LoginScreen({ onLogin, onRegister }: LoginScreenProps) {
             AdsCreator AI
           </h2>
           <p className="text-xs text-slate-400 mt-2 font-medium">Plataforma de Monitoramento & Sincronização Premium</p>
+
+          {/* Status de Conexão Ativo com Supabase */}
+          {supabaseStatus && (
+            <div className="mt-4 flex flex-col items-center justify-center gap-1">
+              <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase border font-mono ${
+                supabaseStatus.status === 'online'
+                  ? 'bg-green-500/10 border-green-500/20 text-green-400'
+                  : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+              }`}>
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                    supabaseStatus.status === 'online' ? 'bg-green-400' : 'bg-amber-400'
+                  }`}></span>
+                  <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${
+                    supabaseStatus.status === 'online' ? 'bg-green-500' : 'bg-amber-500'
+                  }`}></span>
+                </span>
+                {supabaseStatus.status === 'online' ? 'Supabase Conectado' : 'Modo Autônomo Ativo'}
+              </div>
+              <p className="text-[9px] text-slate-500 font-mono mt-1 max-w-[280px] mx-auto leading-relaxed">
+                {supabaseStatus.message}
+              </p>
+            </div>
+          )}
         </div>
 
         {/* TABS SELECTOR */}
