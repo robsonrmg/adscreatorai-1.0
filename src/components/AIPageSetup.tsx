@@ -12,7 +12,8 @@ import {
   Check,
   Globe,
   RefreshCw,
-  Sliders
+  Sliders,
+  Download
 } from 'lucide-react';
 
 function detectLanguageFromUrl(url: string): 'pt' | 'en' | 'es' | 'it' {
@@ -746,38 +747,48 @@ export default function AIPageSetup({ onBack, onPageCreated, onEditPage, userPla
             
             <div className="grid grid-cols-2 gap-3">
               
-              {/* Button: Copiar URL Final */}
+              {/* Button: Copiar Link */}
               <button
                 type="button"
                 onClick={() => handleCopyUrl(getPublishUrlDisplay(successPage))}
                 className="flex items-center justify-center gap-1.5 py-3 px-4 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-850 text-slate-200 hover:text-white text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-md"
               >
                 {copied ? <Check size={14} className="text-green-400" /> : <Copy size={13} className="text-green-400" />}
-                {copied ? "Copiado!" : "Copiar URL Final"}
+                {copied ? "Copiado!" : "Copiar Link"}
               </button>
 
+              {/* Button: Exportar Página */}
+              <a
+                href={`/api/pages/${successPage.id}/download`}
+                download={`index-${successPage.slug}.html`}
+                className="flex items-center justify-center gap-1.5 py-3 px-4 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-850 text-slate-250 hover:text-white text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-md text-slate-200"
+              >
+                <Download size={13} className="text-green-400" />
+                Exportar Página
+              </a>
+
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              
               {/* Button: Abrir Página */}
               <a
                 href={`/p/${successPage.slug}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center justify-center gap-1.5 py-3 px-4 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-850 text-slate-200 hover:text-white text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-md"
+                className="flex items-center justify-center gap-1 py-3 px-2 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-850 text-slate-200 hover:text-white text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer shadow-md"
               >
-                <ExternalLink size={13} className="text-blue-400" />
+                <ExternalLink size={12} className="text-blue-400" />
                 Abrir Página
               </a>
 
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              
               {/* Button: Editar Página */}
               <button
                 type="button"
                 onClick={() => onEditPage(successPage.id)}
-                className="flex items-center justify-center gap-1.5 py-3 px-4 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-850 text-slate-200 hover:text-white text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-md"
+                className="flex items-center justify-center gap-1 py-3 px-2 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-850 text-slate-200 hover:text-white text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer shadow-md"
               >
-                <Edit3 size={13} className="text-yellow-400" />
+                <Edit3 size={12} className="text-yellow-400" />
                 Editar Página
               </button>
 
@@ -786,14 +797,14 @@ export default function AIPageSetup({ onBack, onPageCreated, onEditPage, userPla
                 type="button"
                 disabled={isRegenerating}
                 onClick={handleRegenerate}
-                className="flex items-center justify-center gap-1.5 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-750 text-white disabled:opacity-50 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-md"
+                className="flex items-center justify-center gap-1 py-3 px-2 rounded-xl bg-slate-800 hover:bg-slate-755 text-white disabled:opacity-50 text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer shadow-md"
               >
                 {isRegenerating ? (
-                  <Loader2 size={13} className="animate-spin text-green-400" />
+                  <Loader2 size={12} className="animate-spin text-green-400" />
                 ) : (
-                  <RefreshCw size={13} className="text-green-400" />
+                  <RefreshCw size={12} className="text-green-400" />
                 )}
-                {isRegenerating ? "Regenerando..." : "Regenerar"}
+                {isRegenerating ? "Reger..." : "Regenerar"}
               </button>
 
             </div>

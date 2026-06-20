@@ -7,6 +7,7 @@ import EditorWorkspace from './components/EditorWorkspace';
 import ActivityLogPanel from './components/ActivityLogPanel';
 import UserProfileDropdown from './components/UserProfileDropdown';
 import LoginScreen from './components/LoginScreen';
+import { checkConnection } from './lib/supabase';
 import {
   Globe,
   Plus,
@@ -26,17 +27,22 @@ import {
   TrendingUp,
   Sliders,
   Sparkle,
-  Download
+  Download,
+  LogIn,
+  Lock,
+  ShieldAlert,
+  Upload
 } from 'lucide-react';
 
 export default function App() {
   const [pages, setPages] = useState<Page[]>([]);
+  const [currentPage, setCurrentPage] = useState<number>(1);
   const [profile, setProfile] = useState<ClientProfile | null>(null);
   const [pixels, setPixels] = useState<PixelIntegrations | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
-    return localStorage.getItem('ads_is_logged_in') !== 'false';
+    return localStorage.getItem('ads_is_logged_in') === 'true';
   });
   
   const [activeTab, setActiveTab] = useState<'pages' | 'plans'>('pages');
@@ -52,6 +58,48 @@ export default function App() {
     return (saved === 'pt' || saved === 'en' || saved === 'es' || saved === 'it') ? saved : 'pt';
   });
 
+  const [supabaseStatus, setSupabaseStatus] = useState<{
+    isChecked: boolean;
+    success: boolean;
+    message: string;
+    code?: string;
+  }>({
+    isChecked: false,
+    success: false,
+    message: "Verificando conexão..."
+  });
+
+  const [copiedSql, setCopiedSql] = useState(false);
+
+  // Pagination & Sorting (10 pages per block, newest first)
+  const itemsPerPage = 10;
+  const sortedPages = React.useMemo(() => {
+    return [...pages].sort((a, b) => {
+      const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return dateB - dateA;
+    });
+  }, [pages]);
+
+  const totalPages = Math.ceil(sortedPages.length / itemsPerPage);
+  const activePage = Math.min(Math.max(1, currentPage), totalPages || 1);
+  const startIndex = (activePage - 1) * itemsPerPage;
+  const paginatedPages = React.useMemo(() => {
+    return sortedPages.slice(startIndex, startIndex + itemsPerPage);
+  }, [sortedPages, startIndex]);
+
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [pages.length]);
+
+  React.useEffect(() => {
+    if (pages && pages.length > 0) {
+      localStorage.setItem('ads_pages_backup', JSON.stringify(pages));
+    } else if (pages && pages.length === 0 && !isLoading) {
+      localStorage.setItem('ads_pages_backup', JSON.stringify([]));
+    }
+  }, [pages, isLoading]);
+
   const handleGlobalLanguageChange = (lang: 'pt' | 'en' | 'es' | 'it') => {
     setGlobalLanguage(lang);
     localStorage.setItem('ads_global_lang', lang);
@@ -61,18 +109,82 @@ export default function App() {
   // Synchronize dynamic databases on loading and mounts
   const fetchData = async () => {
     try {
-      const [pRes, profRes, pixRes, logRes] = await Promise.all([
-        fetch('/api/pages'),
-        fetch('/api/profile'),
-        fetch('/api/integrations'),
-        fetch('/api/logs')
-      ]);
+      try {
+        const pRes = await fetch('/api/pages');
+        if (pRes.ok) {
+          const fetchedPages = await pRes.json();
+          setPages(fetchedPages);
 
-      if (pRes.ok && profRes.ok && pixRes.ok && logRes.ok) {
-        setPages(await pRes.json());
-        setProfile(await profRes.json());
-        setPixels(await pixRes.json());
-        setLogs(await logRes.json());
+          // Auto-recovery backup pages list from localStorage if server db is vacant or wiped
+          const backupStr = localStorage.getItem('ads_pages_backup');
+          if ((!fetchedPages || fetchedPages.length === 0) && backupStr) {
+            try {
+              const backupPages = JSON.parse(backupStr);
+              if (Array.isArray(backupPages) && backupPages.length > 0) {
+                console.log("[Auto-Sync] Restaurando páginas salvas em cache local...");
+                for (const bkPage of backupPages) {
+                  await fetch('/api/pages/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pageData: bkPage })
+                  });
+                }
+                const refetchRes = await fetch('/api/pages');
+                if (refetchRes.ok) {
+                  setPages(await refetchRes.json());
+                  triggerToast("Suas páginas criadas foram restauradas do navegador com sucesso!");
+                }
+              }
+            } catch (backupErr) {
+              console.error("Erro restaurando backup local:", backupErr);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Erro ao carregar paginas:", err);
+      }
+
+      try {
+        const profRes = await fetch('/api/profile');
+        if (profRes.ok) {
+          setProfile(await profRes.json());
+        } else {
+          setProfile({
+            name: "Afiliado Autoridade",
+            email: "ribeiromoreira91@gmail.com",
+            planId: "starter",
+            pagesCreatedCount: 0,
+            subdomain: "ribeiros-ads.adscreator.ai"
+          });
+        }
+      } catch (err) {
+        console.error("Erro ao carregar perfil, usando padrao:", err);
+        setProfile({
+          name: "Afiliado Autoridade",
+          email: "ribeiromoreira91@gmail.com",
+          planId: "starter",
+          pagesCreatedCount: 0,
+          subdomain: "ribeiros-ads.adscreator.ai"
+        });
+      }
+
+      try {
+        const pixRes = await fetch('/api/integrations');
+        if (pixRes.ok) {
+          setPixels(await pixRes.json());
+        } else {
+          setPixels({});
+        }
+      } catch (err) {
+        console.error("Erro ao carregar pixel settings:", err);
+        setPixels({});
+      }
+
+      try {
+        const logRes = await fetch('/api/logs');
+        if (logRes.ok) setLogs(await logRes.json());
+      } catch (err) {
+        console.error("Erro ao carregar logs:", err);
       }
     } catch (e) {
       console.error("Erro de sincronização de dados fullstack: ", e);
@@ -81,8 +193,28 @@ export default function App() {
     }
   };
 
+  const verifySupabase = async () => {
+    try {
+      const res = await checkConnection();
+      setSupabaseStatus({
+        isChecked: true,
+        success: res.success,
+        message: res.message,
+        code: res.code
+      });
+    } catch (err: any) {
+      setSupabaseStatus({
+        isChecked: true,
+        success: false,
+        message: err.message || String(err),
+        code: "UNEXPECTED_ERROR"
+      });
+    }
+  };
+
   useEffect(() => {
     fetchData();
+    verifySupabase();
   }, []);
 
   const triggerToast = (msg: string) => {
@@ -193,6 +325,26 @@ export default function App() {
     }
   };
 
+  const handleHeaderLogin = async (email: string, password?: string) => {
+    if (!email || !email.includes('@')) {
+      triggerToast("Por favor, insira um e-mail válido!");
+      return;
+    }
+    if (password && password.length < 4) {
+      triggerToast("A senha deve ter pelo menos 4 caracteres!");
+      return;
+    }
+    const nameFromEmail = email.split('@')[0];
+    const capitalizedName = nameFromEmail.charAt(0).toUpperCase() + nameFromEmail.slice(1);
+    
+    const success = await handleLogin(capitalizedName, email, "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80");
+    if (success) {
+      triggerToast(`Painel acessado com sucesso!`);
+    } else {
+      triggerToast("Erro ao efetuar login. Tente novamente.");
+    }
+  };
+
   // 4. Duplicate page
   const handleDuplicatePage = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -223,6 +375,56 @@ export default function App() {
     } catch (err) {
       console.error(err);
     }
+  };
+
+  const handleImportHtml = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+
+      try {
+        let pageData: any = null;
+
+        if (text.trim().startsWith('{')) {
+          pageData = JSON.parse(text);
+        } else {
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(text, 'text/html');
+          const scriptEl = doc.getElementById('adscreator-backup-data');
+          if (scriptEl && scriptEl.textContent) {
+            pageData = JSON.parse(scriptEl.textContent);
+          }
+        }
+
+        if (!pageData || !pageData.components || !pageData.slug) {
+          triggerToast("Não foi possível localizar os dados de restauração AdsCreator neste arquivo HTML.");
+          return;
+        }
+
+        const res = await fetch('/api/pages/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pageData }),
+        });
+
+        if (res.ok) {
+          triggerToast(`Página "${pageData.title}" importada e restaurada com sucesso!`);
+          fetchData();
+        } else {
+          const errData = await res.json();
+          triggerToast(errData.error || "Erro ao salvar a página importada.");
+        }
+      } catch (err: any) {
+        console.error("Erro na importação:", err);
+        triggerToast("Falha técnica ao tentar ler o arquivo importado.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   // 6. Save visual builder updates on component list
@@ -259,12 +461,8 @@ export default function App() {
     );
   }
 
-  if (!isLoggedIn) {
-    return <LoginScreen onLogin={handleLogin} />;
-  }
-
   // Active editor rendering logic
-  if (viewingWorkOrderId) {
+  if (viewingWorkOrderId && isLoggedIn) {
     const editPageInstance = pages.find((p) => p.id === viewingWorkOrderId);
     if (editPageInstance) {
       return (
@@ -291,7 +489,7 @@ export default function App() {
   }
 
   // Active AI generation wizard rendering logic
-  if (isCreatingNew) {
+  if (isCreatingNew && isLoggedIn) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
         <nav className="bg-slate-900 border-b border-slate-800 px-6 py-4 flex justify-between items-center">
@@ -361,48 +559,84 @@ export default function App() {
           {/* Quick Header Stats */}
           <div className="flex items-center gap-6">
             
-            {/* Active profile limit status tracker on header */}
-            <div className="hidden md:flex flex-col items-end text-right">
-              <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider">Limites de Páginas</span>
-              <span className="text-xs font-bold text-slate-200 mt-0.5">
-                {currentCount} / <span className="text-slate-400 font-semibold">{limit === 999999 ? 'Ilimitado' : `${limit} un.`}</span>
-              </span>
-              <div className="w-24 bg-slate-800 h-1 rounded-full mt-1.5 overflow-hidden">
-                <div
-                  className={`h-full rounded-full ${limitReached ? 'bg-red-500' : 'bg-green-400'}`}
-                  style={{ width: `${Math.min(100, Math.round((currentCount / limit) * 100))}%` }}
-                ></div>
-              </div>
-            </div>
+            {!isLoggedIn ? (
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const form = e.currentTarget;
+                const emailInput = form.elements.namedItem('headerEmail') as HTMLInputElement;
+                const passwordInput = form.elements.namedItem('headerPassword') as HTMLInputElement;
+                handleHeaderLogin(emailInput.value, passwordInput.value);
+              }} className="flex flex-col sm:flex-row items-center gap-2 bg-slate-900 border border-slate-800 p-2 sm:p-2 sm:py-1.5 sm:px-3 rounded-2xl">
+                <div className="flex items-center gap-2">
+                  <input
+                    name="headerEmail"
+                    type="email"
+                    required
+                    placeholder="Login / E-mail"
+                    className="bg-slate-950 border border-slate-800 focus:border-green-500 rounded-lg py-1 px-2.5 text-[11px] text-white placeholder:text-slate-500 focus:outline-none w-36 sm:w-44 font-sans"
+                  />
+                  <input
+                    name="headerPassword"
+                    type="password"
+                    required
+                    placeholder="Senha"
+                    className="bg-slate-950 border border-slate-800 focus:border-green-500 rounded-lg py-1 px-2.5 text-[11px] text-white placeholder:text-slate-500 focus:outline-none w-24 sm:w-28 font-sans"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="bg-gradient-to-r from-green-400 to-emerald-500 hover:from-green-300 hover:to-emerald-400 text-slate-950 font-black px-3.5 py-1 rounded-lg text-[11px] uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer border-0 w-full sm:w-auto justify-center font-sans shadow shadow-green-950/20"
+                >
+                  <LogIn size={11} strokeWidth={3} />
+                  Entrar
+                </button>
+              </form>
+            ) : (
+              <>
+                {/* Active profile limit status tracker on header */}
+                <div className="hidden md:flex flex-col items-end text-right">
+                  <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider">Limites de Páginas</span>
+                  <span className="text-xs font-bold text-slate-200 mt-0.5">
+                    {currentCount} / <span className="text-slate-400 font-semibold">{limit === 999999 ? 'Ilimitado' : `${limit} un.`}</span>
+                  </span>
+                  <div className="w-24 bg-slate-800 h-1 rounded-full mt-1.5 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${limitReached ? 'bg-red-500' : 'bg-green-400'}`}
+                      style={{ width: `${Math.min(100, Math.round((currentCount / limit) * 100))}%` }}
+                    ></div>
+                  </div>
+                </div>
 
-            {/* Plan Badge toggles tab */}
-            <div className="flex bg-slate-900 border border-slate-800 p-1 rounded-lg text-xs font-semibold">
-              <button
-                onClick={() => setActiveTab('pages')}
-                className={`py-1.5 px-4 rounded-md transition-all cursor-pointer ${
-                  activeTab === 'pages' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Páginas
-              </button>
-              <button
-                onClick={() => setActiveTab('plans')}
-                className={`py-1.5 px-4 rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${
-                  activeTab === 'plans' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <CreditCard size={12} />
-                Plano & Domínios
-              </button>
-            </div>
+                {/* Plan Badge toggles tab */}
+                <div className="flex bg-slate-900 border border-slate-800 p-1 rounded-lg text-xs font-semibold">
+                  <button
+                    onClick={() => setActiveTab('pages')}
+                    className={`py-1.5 px-4 rounded-md transition-all cursor-pointer ${
+                      activeTab === 'pages' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Páginas
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('plans')}
+                    className={`py-1.5 px-4 rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${
+                      activeTab === 'plans' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <CreditCard size={12} />
+                    Plano & Domínios
+                  </button>
+                </div>
 
-            {/* Profile Dropdown with picture upload / logout option */}
-            {profile && (
-              <UserProfileDropdown
-                profile={profile}
-                onUpdateProfile={handleUpdateProfile}
-                onLogout={handleLogout}
-              />
+                {/* Profile Dropdown with picture upload / logout option */}
+                {profile && (
+                  <UserProfileDropdown
+                    profile={profile}
+                    onUpdateProfile={handleUpdateProfile}
+                    onLogout={handleLogout}
+                  />
+                )}
+              </>
             )}
 
           </div>
@@ -411,7 +645,63 @@ export default function App() {
       </nav>
 
       {/* DASHBOARD CONTENT BOUNDS */}
-      <main className="max-w-7xl mx-auto px-6 py-8 space-y-10">
+      <main className="max-w-7xl mx-auto px-6 py-8 space-y-10 relative">
+        
+        {!isLoggedIn && (
+          <div className="absolute inset-x-0 top-0 bottom-0 bg-slate-955/95 backdrop-blur-lg rounded-2xl flex flex-col items-center justify-center text-center p-6 sm:p-8 z-30 border border-slate-900/60 shadow-2xl min-h-[500px]">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-green-500 to-emerald-600 p-[1px] shadow-lg shadow-green-950/20 mb-4 flex items-center justify-center">
+              <div className="w-full h-full bg-slate-950 rounded-2xl flex items-center justify-center text-green-400">
+                <Lock size={20} />
+              </div>
+            </div>
+            <h3 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
+              <ShieldAlert className="text-amber-500" size={18} />
+              Acesso Restrito / Painel Bloqueado
+            </h3>
+            <p className="text-xs text-slate-400 max-w-sm mt-2 font-medium leading-relaxed font-sans">
+              Insira as suas credenciais no formulário integrado abaixo ou no painel superior direito para liberar o AdsCreator AI.
+            </p>
+
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const form = e.currentTarget;
+              const emailInput = form.elements.namedItem('mainEmail') as HTMLInputElement;
+              const passwordInput = form.elements.namedItem('mainPassword') as HTMLInputElement;
+              handleHeaderLogin(emailInput.value, passwordInput.value);
+            }} className="mt-6 w-full max-w-sm bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4 shadow-xl">
+              <div className="space-y-3">
+                <div className="text-left">
+                  <label className="text-[10px] uppercase font-bold tracking-wider font-mono text-slate-400">Usuário / E-mail</label>
+                  <input
+                    name="mainEmail"
+                    type="email"
+                    required
+                    placeholder="Ex: ribeiromoreira91@gmail.com"
+                    defaultValue="ribeiromoreira91@gmail.com"
+                    className="w-full bg-slate-955 border border-slate-800 focus:border-green-500 rounded-xl py-2.5 px-3.5 text-xs text-white placeholder:text-slate-600 focus:outline-none mt-1 font-sans"
+                  />
+                </div>
+                <div className="text-left">
+                  <label className="text-[10px] uppercase font-bold tracking-wider font-mono text-slate-400">Senha de Acesso</label>
+                  <input
+                    name="mainPassword"
+                    type="password"
+                    required
+                    placeholder="Digite sua senha de acesso"
+                    className="w-full bg-slate-955 border border-slate-800 focus:border-green-500 rounded-xl py-2.5 px-3.5 text-xs text-white placeholder:text-slate-600 focus:outline-none mt-1 font-sans"
+                  />
+                </div>
+              </div>
+              <button
+                type="submit"
+                className="w-full bg-gradient-to-r from-green-400 to-emerald-500 hover:from-green-300 hover:to-emerald-400 text-slate-950 font-black py-3 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer border-0 shadow shadow-green-950/20"
+              >
+                <LogIn size={13} strokeWidth={2.5} />
+                Entrar no Painel
+              </button>
+            </form>
+          </div>
+        )}
         
         {activeTab === 'pages' && (
           <div className="space-y-10">
@@ -430,13 +720,26 @@ export default function App() {
                   <p className="text-xs text-slate-500 mt-0.5">Visão geral sobre mídias reviews, presells e landing pages configuradas.</p>
                 </div>
 
-                <button
-                  onClick={() => setIsCreatingNew(true)}
-                  className="flex items-center gap-2 bg-green-400 hover:bg-green-300 text-slate-950 font-black tracking-wider uppercase text-xs py-3 px-6 rounded-xl shadow-lg shadow-green-950/25 border-0 cursor-pointer"
-                >
-                  <Plus size={14} />
-                  Criar com um Clique
-                </button>
+                <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+                  <label className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-white font-black tracking-wider uppercase text-xs py-3 px-5 rounded-xl border border-slate-700 cursor-pointer w-full sm:w-auto text-center font-sans tracking-wide">
+                    <Upload size={14} className="text-green-400" />
+                    Importar do HTML
+                    <input
+                      type="file"
+                      accept=".html"
+                      onChange={handleImportHtml}
+                      className="hidden"
+                    />
+                  </label>
+
+                  <button
+                    onClick={() => setIsCreatingNew(true)}
+                    className="flex items-center gap-2 bg-green-400 hover:bg-green-300 text-slate-950 font-black tracking-wider uppercase text-xs py-3 px-6 rounded-xl shadow-lg shadow-green-950/25 border-0 cursor-pointer w-full sm:w-auto justify-center font-sans"
+                  >
+                    <Plus size={14} />
+                    Criar com um Clique
+                  </button>
+                </div>
               </div>
 
               {/* TABLE CONTAINER CARD */}
@@ -458,7 +761,8 @@ export default function App() {
                     </button>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto">
+                  <>
+                    <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs border-collapse">
                       <thead>
                         <tr className="bg-slate-950 text-slate-450 border-b border-slate-800 font-mono tracking-wider text-slate-400">
@@ -472,7 +776,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/40">
-                        {pages.map((p) => (
+                        {paginatedPages.map((p) => (
                           <tr key={p.id} className="hover:bg-slate-850/20 transition-all group">
                             
                             {/* Product Title / Link placeholder */}
@@ -592,7 +896,64 @@ export default function App() {
                       </tbody>
                     </table>
                   </div>
-                )}
+
+                  {/* PAGINATION CONTROLS */}
+                  {totalPages > 1 && (
+                    <div className="bg-slate-950 border-t border-slate-800/50 px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+                      <div className="text-[11px] text-slate-400 font-mono">
+                        Exibindo <span className="text-white font-bold">{Math.min(startIndex + 1, sortedPages.length)}</span> até <span className="text-white font-bold">{Math.min(startIndex + itemsPerPage, sortedPages.length)}</span> de <span className="text-green-400 font-bold">{sortedPages.length}</span> páginas
+                      </div>
+                      
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={activePage === 1}
+                          onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                          className="px-3 py-1.5 text-[11px] font-bold font-mono border border-slate-850 bg-slate-900 rounded-lg text-slate-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-800 cursor-pointer transition-all flex items-center gap-1"
+                        >
+                          &larr; Anterior
+                        </button>
+
+                        {Array.from({ length: totalPages }).map((_, i) => {
+                          const pageNum = i + 1;
+                          const isNear = Math.abs(pageNum - activePage) <= 1 || pageNum === 1 || pageNum === totalPages;
+                          
+                          if (!isNear) {
+                            if (pageNum === 2 || pageNum === totalPages - 1) {
+                              return <span key={pageNum} className="text-slate-600 px-0.5 font-mono text-xs">...</span>;
+                            }
+                            return null;
+                          }
+
+                          return (
+                            <button
+                              key={pageNum}
+                              type="button"
+                              onClick={() => setCurrentPage(pageNum)}
+                              className={`w-7 h-7 flex items-center justify-center rounded-lg text-[11px] font-bold font-mono transition-all cursor-pointer ${
+                                activePage === pageNum 
+                                  ? 'bg-green-400 text-slate-950 shadow-md shadow-green-950/40 font-black' 
+                                  : 'border border-slate-850 bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800'
+                              }`}
+                            >
+                              {pageNum}
+                            </button>
+                          );
+                        })}
+
+                        <button
+                          type="button"
+                          disabled={activePage === totalPages}
+                          onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                          className="px-3 py-1.5 text-[11px] font-bold font-mono border border-slate-850 bg-slate-900 rounded-lg text-slate-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-800 cursor-pointer transition-all flex items-center gap-1"
+                        >
+                          Próxima &rarr;
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
               </div>
             </div>
 

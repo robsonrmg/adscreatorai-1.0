@@ -1,11 +1,14 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import dns from "dns";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+// 1. Importar o cliente do Supabase
+import { createClient } from "@supabase/supabase-js";
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const app = express();
 const PORT = 3000;
@@ -13,11 +16,108 @@ const PORT = 3000;
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
+// 2. Inicializar o cliente do Supabase usando variáveis de ambiente
+let rawSupabaseUrl = (process.env.SUPABASE_URL || "").trim();
+// Limpar a URL caso termine com o sufixo da API RESTful /rest/v1 ou /v1, comumente colado por engano
+rawSupabaseUrl = rawSupabaseUrl.replace(/\/rest\/v1\/?$/, "");
+rawSupabaseUrl = rawSupabaseUrl.replace(/\/v1\/?$/, "");
+rawSupabaseUrl = rawSupabaseUrl.replace(/\/+$/, "");
+
+const isPlaceholder = (val: string) => {
+  const v = val.toLowerCase();
+  return !v || 
+         v.includes("your-") || 
+         v.includes("placeholder") || 
+         v.includes("your_") || 
+         v.includes("example.com") || 
+         v.includes("[") || 
+         v.includes("]");
+};
+
+const SUPABASE_URL = isPlaceholder(rawSupabaseUrl) ? "" : rawSupabaseUrl;
+const SUPABASE_ANON_KEY = isPlaceholder((process.env.SUPABASE_ANON_KEY || "").trim()) ? "" : (process.env.SUPABASE_ANON_KEY || "").trim();
+const SUPABASE_SERVICE_ROLE_KEY = isPlaceholder((process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim()) ? "" : (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.warn("⚠️ ATENÇÃO: As credenciais do Supabase não foram configuradas no arquivo .env ou são placeholders.");
+}
+
+// O banco de dados no servidor prefere usar o service_role para contornar políticas RLS legítimas de forma segura.
+const serverSupabaseKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
+const supabase = (SUPABASE_URL && serverSupabaseKey) ? createClient(SUPABASE_URL, serverSupabaseKey) : null;
+
+// Tentar criar ou garantir a existência do bucket 'page-media' de forma pública no Supabase
+async function ensureBucketExists() {
+  if (supabase && SUPABASE_URL && SUPABASE_ANON_KEY) {
+    try {
+      const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+      if (!listError && buckets) {
+        const exists = buckets.some(b => b.name === "page-media");
+        if (exists) {
+          console.log("[Supabase Storage] Bucket 'page-media' já existe e está pronto.");
+          return;
+        }
+      }
+
+      const { data, error } = await supabase.storage.createBucket("page-media", {
+        public: true,
+        allowedMimeTypes: ["image/png", "image/jpeg", "image/webp", "image/svg+xml", "image/gif"]
+      });
+
+      if (error) {
+        console.log(`[Supabase Storage] Nota: Buckets podem necessitar de criação manual ou de políticas adicionais no painel do seu Supabase. Detalhe:`, error.message);
+      } else {
+        console.log(`[Supabase Storage] Bucket 'page-media' criado com sucesso de modo público.`);
+      }
+    } catch (e: any) {
+      console.warn(`[Supabase Storage] Nota na inicialização automática do bucket 'page-media':`, e.message || e);
+    }
+  }
+}
+ensureBucketExists();
+
+// Executa o reset dos contadores de demonstração caso o Supabase esteja habilitado para uso em produção.
+async function checkAndResetProjectCounters() {
+  if (supabase && SUPABASE_URL && SUPABASE_ANON_KEY) {
+    try {
+      const db = readDB();
+      // Não queremos resetar infinitamente os novos dados reais gerados. Usamos uma chave flag no db para saber se já limpamos uma primeira vez.
+      if (!db.profile || !db.countersResetAfterSupabaseConnected) {
+        console.log("[Supabase Connection] Habilitado para produção. Zerando os contadores de demonstração iniciais...");
+        
+        if (db.profile) {
+          db.profile.pagesCreatedCount = 0;
+        }
+        
+        if (db.pages && Array.isArray(db.pages)) {
+          db.pages.forEach((page: any) => {
+            page.views = 0;
+            page.clicks = 0;
+            page.ctr = 0;
+          });
+        }
+        
+        db.countersResetAfterSupabaseConnected = true;
+        writeDB(db);
+        console.log("[Supabase Connection] Contadores iniciais limpos com sucesso!");
+      }
+    } catch (err: any) {
+      console.warn("[Supabase Connection] Não foi possível redefinir os contadores de demonstração:", err.message || err);
+    }
+  }
+}
+checkAndResetProjectCounters();
+
 const STORAGE_DIR = path.join(process.cwd(), "storage");
 if (!fs.existsSync(STORAGE_DIR)) {
   fs.mkdirSync(STORAGE_DIR, { recursive: true });
 }
 app.use("/storage", express.static(STORAGE_DIR));
+
+// O arquivo DB_FILE e as funções antigas readDB() e writeDB() podem ser removidas daqui.
+// Nota técnica de suporte: Para manter a compatibilidade e evitar erros críticos de compilação
+// em todos os mais de 15 endpoints atuais do express que ainda dependem do readDB e writeDB de forma síncrona,
+// mantemos as definições abaixo ativas até que cada endpoint seja migrado para lidar com promessas de forma assíncrona.
 
 const DB_FILE = path.join(process.cwd(), "db.json");
 
@@ -205,6 +305,38 @@ function getGeminiClient(): GoogleGenAI {
   return aiClient;
 }
 
+// Retry wrapper for Gemini API calls to handle transient errors such as 503 (service unavailable) or 429 (rate limits)
+async function generateContentWithRetry(ai: GoogleGenAI, params: any, maxRetries = 5, initialDelayMs = 2000) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await ai.models.generateContent(params);
+    } catch (error: any) {
+      attempt++;
+      const isTransient = error?.status === 503 || 
+                          error?.status === 429 || 
+                          error?.code === 503 ||
+                          error?.code === 429 ||
+                          (error?.message && (
+                            error.message.includes("503") || 
+                            error.message.includes("429") || 
+                            error.message.includes("temporary") || 
+                            error.message.includes("experiencing high demand") ||
+                            error.message.includes("UNAVAILABLE") ||
+                            error.message.includes("Resource has been exhausted")
+                          ));
+      
+      if (isTransient && attempt < maxRetries) {
+        const delay = initialDelayMs * Math.pow(2.2, attempt) * (0.8 + Math.random() * 0.4);
+        console.warn(`[Gemini API] Erro transitório detectado (${error?.message || error}). Tentamos novamente em ${Math.round(delay)}ms... (Tentativa ${attempt} de ${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
 // Log assistant
 function addLog(action: string, details: string) {
   const db = readDB();
@@ -259,20 +391,51 @@ async function extractAndDownloadImages(productUrl: string, affiliateUrl: string
         foundImgUrls.add(ogMatch[1].trim());
       }
 
-      // 2. Srcset / standard image tags matches
-      const imgRegex = /<img[^>]+src=["']([^"']+)["']/gi;
-      let match;
-      while ((match = imgRegex.exec(html)) !== null) {
-        if (match[1]) {
-          foundImgUrls.add(match[1].trim());
+      // 2. Comprehensive pattern for any image source attributes inside tags (src, srcset, data-src, etc.)
+      const imgTagRegex = /<img[^>]+(?:src|srcset|data-src|data-lazy|data-lazy-src|data-original|src-large)=["']([^"']+)["']/gi;
+      let imgMatch;
+      while ((imgMatch = imgTagRegex.exec(html)) !== null) {
+        if (imgMatch[1]) {
+          const rawMatches = imgMatch[1].trim().split(",");
+          for (const rawItem of rawMatches) {
+            const cleanUrl = rawItem.trim().split(/\s+/)[0];
+            if (cleanUrl) {
+              foundImgUrls.add(cleanUrl);
+            }
+          }
         }
       }
 
-      // 3. Search and parse lazy loaded source formats
-      const dataSrcRegex = /data-src=["']([^"']+)["']/gi;
-      while ((match = dataSrcRegex.exec(html)) !== null) {
-        if (match[1]) {
-          foundImgUrls.add(match[1].trim());
+      // 3. Match explicit standard/relative background styling URLs
+      const bgImgPattern = /url\s*\(\s*['"]?([^'")]+\.(?:png|jpg|jpeg|gif|webp|svg))['"]?\s*\)/gi;
+      let bgMatch;
+      while ((bgMatch = bgImgPattern.exec(html)) !== null) {
+        if (bgMatch[1]) {
+          foundImgUrls.add(bgMatch[1].trim());
+        }
+      }
+
+      // 4. Match tags containing picture sources (srcset/src)
+      const sourceTagRegex = /<source[^>]+(?:srcset|src)=["']([^"']+)["']/gi;
+      let sourceMatch;
+      while ((sourceMatch = sourceTagRegex.exec(html)) !== null) {
+        if (sourceMatch[1]) {
+          const rawMatches = sourceMatch[1].trim().split(",");
+          for (const rawItem of rawMatches) {
+            const cleanUrl = rawItem.trim().split(/\s+/)[0];
+            if (cleanUrl) {
+              foundImgUrls.add(cleanUrl);
+            }
+          }
+        }
+      }
+
+      // 5. Match absolute image URLs anywhere in HTML (highly robust fallback!)
+      const absoluteImageRegex = /(https?:\/\/[^\s'"()<>]+?\.(?:png|jpg|jpeg|gif|webp|svg)(?:\?[^\s'"()<>]*)?)/gi;
+      let absMatch;
+      while ((absMatch = absoluteImageRegex.exec(html)) !== null) {
+        if (absMatch[1]) {
+          foundImgUrls.add(absMatch[1].trim());
         }
       }
 
@@ -313,8 +476,8 @@ async function extractAndDownloadImages(productUrl: string, affiliateUrl: string
     }
   }
 
-  const uniqueCandidates = Array.from(new Set(candidateUrls)).slice(0, 8);
-  console.log(`[AdsCreator AI] Candidatas qualificadas de mídias identificadas: ${uniqueCandidates.length}`);
+  const uniqueCandidates = Array.from(new Set(candidateUrls)).slice(0, 30);
+  console.log(`[AdsCreator AI] Candidatas qualificadas de mídias identificadas para download: ${uniqueCandidates.length}`);
 
   const STORAGE_DIR = path.join(process.cwd(), "storage");
   if (!fs.existsSync(STORAGE_DIR)) {
@@ -326,15 +489,55 @@ async function extractAndDownloadImages(productUrl: string, affiliateUrl: string
   for (const resolvedUrl of uniqueCandidates) {
     try {
       const urlLower = resolvedUrl.toLowerCase();
-      // Classify the image appropriately (benefits, product mockup, banner or logo)
+      // Classify the image appropriately with smart keywords
       let category: "logo" | "main" | "benefit" | "promo" | "secondary" = "secondary";
       if (urlLower.includes("logo") || urlLower.includes("brand") || urlLower.includes("marca")) {
         category = "logo";
-      } else if (urlLower.includes("header") || urlLower.includes("main") || urlLower.includes("banner") || urlLower.includes("hero") || urlLower.includes("mockup")) {
+      } else if (
+        urlLower.includes("bottle") || 
+        urlLower.includes("frasco") || 
+        urlLower.includes("box") || 
+        urlLower.includes("product") || 
+        urlLower.includes("capsule") || 
+        urlLower.includes("embalagem") || 
+        urlLower.includes("pote") ||
+        urlLower.includes("header") || 
+        urlLower.includes("main") || 
+        urlLower.includes("banner") || 
+        urlLower.includes("hero") || 
+        urlLower.includes("mockup")
+      ) {
         category = "main";
-      } else if (urlLower.includes("benefit") || urlLower.includes("clin") || urlLower.includes("ingre") || urlLower.includes("prova") || urlLower.includes("vantagem")) {
+      } else if (
+        urlLower.includes("benefit") || 
+        urlLower.includes("clin") || 
+        urlLower.includes("ingre") || 
+        urlLower.includes("prova") || 
+        urlLower.includes("vantagem") ||
+        urlLower.includes("dr-") ||
+        urlLower.includes("doctor") ||
+        urlLower.includes("med") ||
+        urlLower.includes("expert") ||
+        urlLower.includes("label") ||
+        urlLower.includes("facts") ||
+        urlLower.includes("study") ||
+        urlLower.includes("nutrition") ||
+        urlLower.includes("science") ||
+        urlLower.includes("certification")
+      ) {
         category = "benefit";
-      } else if (urlLower.includes("price") || urlLower.includes("oferta") || urlLower.includes("promo") || urlLower.includes("checkout") || urlLower.includes("comprar")) {
+      } else if (
+        urlLower.includes("price") || 
+        urlLower.includes("oferta") || 
+        urlLower.includes("promo") || 
+        urlLower.includes("checkout") || 
+        urlLower.includes("comprar") ||
+        urlLower.includes("guarantee") ||
+        urlLower.includes("warranty") ||
+        urlLower.includes("stamp") ||
+        urlLower.includes("seal") ||
+        urlLower.includes("badge")
+      ) {
         category = "promo";
       }
 
@@ -360,17 +563,43 @@ async function extractAndDownloadImages(productUrl: string, affiliateUrl: string
         extension = "svg";
       }
 
-      const fileHash = Math.random().toString(36).substring(2, 8) + Date.now().toString(36).substring(4);
-      const filename = `scraped_${category}_${fileHash}.${extension}`;
-      const localPath = path.join(STORAGE_DIR, filename);
+      const fileHash = (Math.random().toString(36).substring(2, 8) + Date.now().toString(36).substring(4)).replace(/[^a-z0-9]/gi, "");
+      const filename = `scraped_${category}_${fileHash}.${extension}`.replace(/[^a-zA-Z0-9_.-]/g, "");
 
-      fs.writeFileSync(localPath, buffer);
+      let servedUrl = "";
+      if (supabase && SUPABASE_URL && SUPABASE_ANON_KEY) {
+        try {
+          const { data: uploadData, error: uploadError } = await supabase.storage
+            .from("page-media")
+            .upload(filename, buffer, {
+              contentType: contentType || "image/png",
+              upsert: true
+            });
+
+          if (!uploadError) {
+            const { data: publicUrlData } = supabase.storage
+              .from("page-media")
+              .getPublicUrl(filename);
+            servedUrl = publicUrlData?.publicUrl || "";
+            console.log(`[Supabase Storage] Objeto sincronizado com sucesso: ${servedUrl}`);
+          } else {
+            console.warn(`[Supabase Storage Info] Detalhe de permissão/bucket:`, uploadError);
+            console.info(`[Supabase Storage Fallback] Ativando fallback de armazenamento local para garantir o funcionamento imediato.`);
+          }
+        } catch (supabaseErr: any) {
+          console.warn(`[Supabase Storage] Nota na transmissão de imagem:`, supabaseErr);
+        }
+      }
+
+      // Fallback local caso o Supabase não esteja configurado ou ocorra um erro
+      if (!servedUrl) {
+        const localPath = path.join(STORAGE_DIR, filename);
+        fs.writeFileSync(localPath, buffer);
+        servedUrl = `/storage/${filename}`;
+        console.log(`[Local Storage Fallback] Salvo localmente: ${servedUrl}`);
+      }
+
       downloadCount++;
-
-      // Real local URL route which is served statically
-      const servedUrl = `/storage/${filename}`;
-
-      console.log(`[Supabase Storage Autoupload] Objeto sincronizado com sucesso: ${servedUrl}`);
 
       if (category === "logo") {
         images.logoImage = servedUrl;
@@ -432,13 +661,70 @@ function detectLanguageFromUrl(url: string): string {
   return "en";
 }
 
+// Extract clean descriptive text blocks from raw HTML to use as direct context for copy generation
+function extractVisibleText(html: string): string {
+  if (!html) return "";
+  try {
+    // Remove scripts, styles, head, iframes, svgs, forms, footers, headers, navs, noscripts to keep definitions clean
+    let cleanHtml = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<head[\s\S]*?<\/head>/gi, " ")
+      .replace(/<iframe[\s\S]*?<\/iframe>/gi, " ")
+      .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+      .replace(/<form[\s\S]*?<\/form>/gi, " ")
+      .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
+      .replace(/<header[\s\S]*?<\/header>/gi, " ")
+      .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
+      .replace(/<!--[\s\S]*?-->/g, " ");
+
+    // Extract content inside standard text delivery tags
+    const matches = cleanHtml.match(/<(p|h1|h2|h3|h4|li|span|div)[^>]*>([\s\S]*?)<\/\1>/gi) || [];
+    const textBlocks: string[] = [];
+
+    for (const match of matches) {
+      // Strip inner tags
+      let blockText = match.replace(/<[^>]*>/g, " ")
+                           .replace(/&nbsp;/g, " ")
+                           .replace(/\s+/g, " ")
+                           .trim();
+
+      // Decode basic HTML entities
+      blockText = blockText.replace(/&amp;/g, "&")
+                           .replace(/&quot;/g, '"')
+                           .replace(/&apos;/g, "'")
+                           .replace(/&lt;/g, "<")
+                           .replace(/&gt;/g, ">")
+                           .replace(/&#39;/g, "'")
+                           .replace(/&deg;/g, "°");
+
+      // Filter out boilerplates, empty links, or extremely short buttons/menus
+      if (
+        blockText.length > 25 &&
+        blockText.length < 1200 &&
+        !/cookie|privacy policy|terms of use|all rights reserved|click here|add to cart|order now|checkout|contact us|sign in|login|forgot password|submit|subscribe/i.test(blockText)
+      ) {
+         textBlocks.push(blockText);
+      }
+    }
+
+    // Unique blocks
+    const uniqueBlocks = Array.from(new Set(textBlocks));
+    return uniqueBlocks.join("\n\n").slice(0, 10000);
+  } catch (err) {
+    console.warn("[extractVisibleText] Erro ao extrair textos:", err);
+    return "";
+  }
+}
+
 // URL Parsing service with beautiful simulation + scraping
 async function fetchAndAnalyzeUrl(targetUrl: string, pageType: string, generationLanguage: string = "pt", affiliateLink: string = "") {
   console.log(`Iniciando análise da URL: ${targetUrl} para o tipo ${pageType} no idioma ${generationLanguage}`);
   let scrapedTitle = "";
   let scrapedDescription = "";
+  let scrapedFullDescriptions = "";
   let deducedProductName = "";
-
+ 
   // 1. Try deducing product name from domain safely
   try {
     const parsed = new URL(targetUrl);
@@ -451,11 +737,16 @@ async function fetchAndAnalyzeUrl(targetUrl: string, pageType: string, generatio
     scrapedTitle = "Página Promocional";
   }
 
-  // 2. Perform a lightweight HTTP fetch to capture meta tags from actual page if possible
+  // 2. Perform a lightweight HTTP fetch to capture meta tags and full text descriptions from actual page if possible
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 seconds timeout
-    const fetchRes = await fetch(targetUrl, { signal: controller.signal });
+    const timeoutId = setTimeout(() => controller.abort(), 6000); // 6 seconds timeout for full scraping
+    const fetchRes = await fetch(targetUrl, { 
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+      },
+      signal: controller.signal 
+    });
     clearTimeout(timeoutId);
     if (fetchRes.ok) {
       const htmlText = await fetchRes.text();
@@ -470,6 +761,10 @@ async function fetchAndAnalyzeUrl(targetUrl: string, pageType: string, generatio
       if (descMatch && descMatch[1]) {
         scrapedDescription = descMatch[1].trim();
       }
+
+      // Extract all readable content/descriptions
+      scrapedFullDescriptions = extractVisibleText(htmlText);
+      console.log(`[Scrape Manager] ${scrapedFullDescriptions.length} caracteres de descrições reais extraídos da URL de referência.`);
     }
   } catch (e) {
     console.log("Lightweight scraping failed/timed out, continuing with domain-extracted metadata.");
@@ -495,14 +790,28 @@ async function fetchAndAnalyzeUrl(targetUrl: string, pageType: string, generatio
 - "Bridge Page": Página de ponte rápida, aquece tráfego frio, foca nos bônus agregados ou no grande diferencial exclusivo.`;
   }
 
-  // Define structured template prompt
-  const systemPrompt = `Você é um Copywriter especialista em Marketing de Afiliados de alta conversão.
+  // Define structured template prompt incorporating full descriptions
+  let systemPrompt = `Você é um Copywriter especialista em Marketing de Afiliados de alta conversão.
 Sua missão é ler dados de um afiliado e retornar uma resposta JSON impecável com cópias estruturadas de vendas no idioma: ${chosenLangName}.
 O tipo de página a ser gerada é: "${pageType}".
 Baseado no nome do produto: "${deducedProductName}".
 Baseado no título de referência: "${scrapedTitle}".
 Descrição de referência: "${scrapedDescription}".
 
+`;
+
+  if (scrapedFullDescriptions) {
+    systemPrompt += `
+-----------------------------------------
+DESCRIÇÕES COMPLETAS, INGREDIENTES E ARGUMENTOS REAIS DO PRODUTO EXTRAÍDOS DO SITE DA OFERTA:
+Use esses dados abaixo para ser extremamente fiel ao produto original (características, benefícios, fórmulas, problemas que resolve, etc.):
+${scrapedFullDescriptions}
+-----------------------------------------
+
+`;
+  }
+
+  systemPrompt += `
 Ajuste o tom de voz ideal para o tipo de página:
 ${pageTypeSpecificGuideline}
 
@@ -523,7 +832,7 @@ Sua resposta DEVE ser estritamente em formato JSON válido, escrito em ${chosenL
   }
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
       model: "gemini-3.5-flash",
       contents: contentPrompt,
       config: {
@@ -755,7 +1064,9 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
       testimonialsTitle: "O que os Clientes Estão Dizendo",
       guaranteeTitle: "Risco Zero: Garantia Blindada de Satisfação",
       guaranteeText: "Adquira hoje e ganhe nossa cobertura blindada de satisfação incondicional de 30 dias para comprovar todos os benefícios.",
-      ctaDefault: `QUERO ADQUIRIR ${prod.toUpperCase()} COM DESCONTO`
+      ctaDefault: `QUERO ADQUIRIR ${prod.toUpperCase()} COM DESCONTO`,
+      galleryTitle: `Ofertas & Apresentação`,
+      gallerySubtitle: "Todas as versões e pacotes promocionais de todos os produtos identificados"
     },
     en: {
       cookieTitle: "This website uses cookies to improve your experience.",
@@ -786,7 +1097,9 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
       testimonialsTitle: "What Our Customers Are Saying",
       guaranteeTitle: "Zero Risk: Ironclad Satisfaction Guarantee",
       guaranteeText: "Order today and receive our ironclad 30-day unconditional satisfaction coverage to prove all benefits yourself.",
-      ctaDefault: `YES, I WANT TO SECURE MY ${prod.toUpperCase()} WITH DISCOUNT`
+      ctaDefault: `YES, I WANT TO SECURE MY ${prod.toUpperCase()} WITH DISCOUNT`,
+      galleryTitle: `Special Offers & Presentation`,
+      gallerySubtitle: "All versions and promotional packages of all identified products below"
     },
     es: {
       cookieTitle: "Este sitio utiliza cookies para mejorar su experiencia.",
@@ -816,8 +1129,10 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
       ],
       testimonialsTitle: "Lo que Dicen Nuestros Clientes",
       guaranteeTitle: "Cero Riesgo: Garantía Blindada de Satisfacción",
-      guaranteeText: "Adquira hoy y obtenga nuestra cobertura blindada de satisfacción incondicional de 30 días para comprobar todos los beneficios.",
-      ctaDefault: `SÍ, QUIERO ADQUIRIR ${prod.toUpperCase()} CON DESCUENTO`
+      guaranteeText: "Adquira hoy y obtenga nuestra cobertura blindada de satisfacción incondicional de 30 días para comprobar todos os benefícios.",
+      ctaDefault: `SÍ, QUIERO ADQUIRIR ${prod.toUpperCase()} CON DESCUENTO`,
+      galleryTitle: `Ofertas y Presentación`,
+      gallerySubtitle: "Todas las versiones y paquetes promocionales de todos los productos identificados"
     },
     it: {
       cookieTitle: "Questo sito utilizza i cookie per migliorare la tua esperienza.",
@@ -848,6 +1163,8 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
       testimonialsTitle: "Cosa Dicono i Nostri Clienti",
       guaranteeTitle: "Zero Rischi: Garanzia di Soddisfazione Blindata",
       guaranteeText: "Ordinalo oggi e ricevi la nostra copertura di soddisfazione incondizionata di 30 giorni per provare tutti i vantaggi di persona.",
+      galleryTitle: `Offerte & Presentazione`,
+      gallerySubtitle: "Tutte le versioni e pacchetti promozionali di tutti i prodotti identificati",
       ctaDefault: `SÌ, VOGLIO ACQUISTARE ${prod.toUpperCase()} CON SCONTO`
     },
     fr: {
@@ -879,7 +1196,9 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
       testimonialsTitle: "Ce que disent nos clients",
       guaranteeTitle: "Zéro Risque : Garantie de Satisfaction Blindée",
       guaranteeText: "Commandez aujourd'hui et recevez notre couverture de satisfaction inconditionnelle de 30 jours pour vérifier tous les avantages par vous-même.",
-      ctaDefault: `SÉCURISER MON ${prod.toUpperCase()} AVEC RÉDUCTION`
+      ctaDefault: `SÉCURISER MON ${prod.toUpperCase()} AVEC RÉDUCTION`,
+      galleryTitle: `Offres & Présentation`,
+      gallerySubtitle: "Toutes les versions et packs promotionnels de tous les produits identifiés"
     }
   };
 
@@ -957,6 +1276,28 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
 
   // Section 5: Image Component (Extracting target brand logo / product mock representation)
   let section5Img = `/api/fallback-image?product=${encodeURIComponent(prod)}&type=${encodeURIComponent(pageType)}`;
+  let allProductImgList: string[] = [];
+
+  if (aiData.scrapedImages) {
+    if (aiData.scrapedImages.mainProductImage) {
+      allProductImgList.push(aiData.scrapedImages.mainProductImage);
+    }
+    if (aiData.scrapedImages.secondaryImages && aiData.scrapedImages.secondaryImages.length > 0) {
+      allProductImgList.push(...aiData.scrapedImages.secondaryImages);
+    }
+    if (aiData.scrapedImages.benefitImages && aiData.scrapedImages.benefitImages.length > 0) {
+      allProductImgList.push(...aiData.scrapedImages.benefitImages);
+    }
+    if (aiData.scrapedImages.promotionalImages && aiData.scrapedImages.promotionalImages.length > 0) {
+      allProductImgList.push(...aiData.scrapedImages.promotionalImages);
+    }
+  }
+
+  // Deduplicate and filter out fallback URLs, limiting to maximum of 6 images
+  allProductImgList = Array.from(new Set(allProductImgList))
+    .filter(url => url && !url.includes("fallback-image"))
+    .slice(0, 6);
+
   if (aiData.scrapedImages?.mainProductImage) {
     section5Img = aiData.scrapedImages.mainProductImage;
   } else if (aiData.scrapedImages?.secondaryImages && aiData.scrapedImages.secondaryImages.length > 1) {
@@ -969,7 +1310,9 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
     type: "image",
     content: {
       src: section5Img,
-      alt: currentLoc.mainImageAlt
+      alt: currentLoc.mainImageAlt,
+      images: allProductImgList.length > 0 ? allProductImgList : undefined,
+      title: `${prod} - ${currentLoc.galleryTitle}`
     }
   });
 
@@ -1035,36 +1378,202 @@ function composePageComponents(aiData: any, targetUrl: string, pageType: string,
 // ----------------------------------------------------
 
 // Get Profile Info
-app.get("/api/profile", (req, res) => {
-  const db = readDB();
-  res.json(db.profile);
+app.get("/api/profile", async (req, res) => {
+  try {
+    const db = readDB();
+    const localProfile = db.profile || {
+      name: "Afiliado Autoridade",
+      email: "ribeiromoreira91@gmail.com",
+      planId: "starter",
+      pagesCreatedCount: 2,
+      subdomain: "ribeiros-ads.adscreator.ai"
+    };
+
+    let supabaseProfile: any = null;
+
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("*")
+          .limit(1)
+          .single();
+
+        if (!error && data) {
+          supabaseProfile = data;
+        }
+      } catch (err) {
+        console.warn("[Supabase Profiles] Erro ao carregar perfil, usando local:", err);
+      }
+    }
+
+    if (supabaseProfile) {
+      // Sincroniza campos locais com o Supabase
+      localProfile.name = supabaseProfile.name || localProfile.name;
+      localProfile.email = supabaseProfile.email || localProfile.email;
+      localProfile.planId = supabaseProfile.plan_id || localProfile.planId;
+      localProfile.pagesCreatedCount = supabaseProfile.pages_created_count ?? localProfile.pagesCreatedCount;
+      localProfile.subdomain = supabaseProfile.subdomain || localProfile.subdomain;
+      localProfile.customDomain = supabaseProfile.custom_domain || localProfile.customDomain;
+
+      db.profile = localProfile;
+      writeDB(db);
+    }
+
+    return res.json(localProfile);
+  } catch (error) {
+    console.error("Erro geral no endpoint de perfil:", error);
+    try {
+      const db = readDB();
+      return res.json(db.profile || {});
+    } catch {
+      return res.json({
+        name: "Afiliado Autoridade",
+        email: "ribeiromoreira91@gmail.com",
+        planId: "starter",
+        pagesCreatedCount: 2,
+        subdomain: "ribeiros-ads.adscreator.ai"
+      });
+    }
+  }
 });
 
 // Update Profile Custom Domain / Subdomain
-app.post("/api/profile/domain", (req, res) => {
+app.post("/api/profile/domain", async (req, res) => {
   const { subdomain, customDomain } = req.body;
   const db = readDB();
   db.profile = db.profile || {};
   if (subdomain !== undefined) db.profile.subdomain = subdomain;
   if (customDomain !== undefined) db.profile.customDomain = customDomain;
   writeDB(db);
+  
   addLog("Mudança de Domínio", `Sua URL de publicação foi redefinida. Subdomínio: ${subdomain || "-"} | Domínio Próprio: ${customDomain || "-"}`);
+
+  if (supabase) {
+    try {
+      const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
+      const payload: any = {
+        subdomain: subdomain || db.profile.subdomain,
+        custom_domain: customDomain || db.profile.customDomain
+      };
+
+      if (firstProfile?.id) {
+        await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
+      } else {
+        await supabase.from("profiles").insert({
+          name: db.profile.name || "Afiliado Autoridade",
+          email: db.profile.email || "seu-email@gmail.com",
+          plan_id: db.profile.planId || "starter",
+          pages_created_count: db.profile.pagesCreatedCount || 0,
+          ...payload
+        });
+      }
+    } catch (err: any) {
+      console.warn("[Supabase Profiles] Falha ao sincronizar alteração de domínio:", err.message || err);
+    }
+  }
+
   res.json(db.profile);
 });
 
+// Verify custom domain DNS configuration (CNAME target)
+app.post("/api/domains/verify", async (req, res) => {
+  try {
+    const { domain } = req.body;
+    if (!domain) {
+      return res.status(400).json({ error: "O domínio não foi informado." });
+    }
+
+    // Clean domain: extract hostname
+    let cleanDomain = domain.trim().toLowerCase();
+    cleanDomain = cleanDomain.replace(/^(https?:\/\/)?(www\.)?/, "");
+    cleanDomain = cleanDomain.replace(/^(https?:\/\/)/, "");
+    cleanDomain = cleanDomain.split("/")[0];
+
+    if (!cleanDomain) {
+      return res.status(400).json({ error: "Domínio inválido ou malformado." });
+    }
+
+    console.log(`[DNS Verify] Verificando CNAME para o domínio: ${cleanDomain}`);
+
+    let cnames: string[] = [];
+    let isConfigured = false;
+    let errorMsg = "";
+
+    try {
+      cnames = await dns.promises.resolveCname(cleanDomain);
+      // Normalized check
+      const cleanCnames = cnames.map(c => c.replace(/\.$/, "").toLowerCase());
+      isConfigured = cleanCnames.some(c => c === "adscreator.ai" || c === "pages.adscreator.ai" || c.includes("adscreator"));
+    } catch (err: any) {
+      errorMsg = err.message || String(err);
+      if (err.code === "ENOTFOUND") {
+        errorMsg = "Domínio não encontrado (NXDOMAIN). Verifique se digitou o domínio corretamente e se o registro foi salvo no seu provedor.";
+      } else if (err.code === "ENODATA") {
+        errorMsg = "Nenhum registro CNAME foi encontrado para este domínio. Ele pode ter apenas registros do tipo A, ou a propagação DNS ainda não terminou.";
+      }
+    }
+
+    let aRecords: string[] = [];
+    try {
+      aRecords = await dns.promises.resolve4(cleanDomain);
+    } catch (err) {
+      // ignore
+    }
+
+    return res.json({
+      domain: cleanDomain,
+      type: "CNAME",
+      expected: "adscreator.ai",
+      foundCnames: cnames,
+      foundARecords: aRecords,
+      isConfigured,
+      errorMsg: isConfigured ? "" : (errorMsg || "Nenhum registro CNAME apontando para 'adscreator.ai' foi localizado.")
+    });
+  } catch (globalErr: any) {
+    console.error("[DNS Verify] Erro geral na verificação de DNS:", globalErr);
+    return res.status(500).json({ error: "Ocorreu um erro interno ao tentar resolver os registros de DNS." });
+  }
+});
+
 // Update Plan Limit
-app.post("/api/profile/plan", (req, res) => {
+app.post("/api/profile/plan", async (req, res) => {
   const { planId } = req.body;
   const db = readDB();
   db.profile = db.profile || {};
   db.profile.planId = planId;
   writeDB(db);
+  
   addLog("Alteração de Plano", `Seu plano do AdsCreator AI foi alterado para: ${planId.toUpperCase()}`);
+
+  if (supabase) {
+    try {
+      const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
+      const payload: any = {
+        plan_id: planId
+      };
+
+      if (firstProfile?.id) {
+        await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
+      } else {
+        await supabase.from("profiles").insert({
+          name: db.profile.name || "Afiliado Autoridade",
+          email: db.profile.email || "seu-email@gmail.com",
+          plan_id: planId,
+          pages_created_count: db.profile.pagesCreatedCount || 0,
+          subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai"
+        });
+      }
+    } catch (err: any) {
+      console.warn("[Supabase Profiles] Falha ao sincronizar alteração de plano:", err.message || err);
+    }
+  }
+
   res.json(db.profile);
 });
 
 // Update Profile Details (Name, Email, Avatar URL)
-app.post("/api/profile/update", (req, res) => {
+app.post("/api/profile/update", async (req, res) => {
   const { name, email, avatarUrl } = req.body;
   const db = readDB();
   db.profile = db.profile || {};
@@ -1072,14 +1581,182 @@ app.post("/api/profile/update", (req, res) => {
   if (email !== undefined) db.profile.email = email;
   if (avatarUrl !== undefined) db.profile.avatarUrl = avatarUrl;
   writeDB(db);
+  
   addLog("Atualização de Perfil", `Seus dados de acesso foram atualizados. Nome: ${name || db.profile.name}`);
+
+  if (supabase) {
+    try {
+      const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
+      const payload: any = {};
+      if (name !== undefined) payload.name = name;
+      if (email !== undefined) payload.email = email;
+
+      if (firstProfile?.id) {
+        await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
+      } else {
+        await supabase.from("profiles").insert({
+          name: name || "Afiliado Autoridade",
+          email: email || "seu-email@gmail.com",
+          plan_id: db.profile.planId || "starter",
+          pages_created_count: db.profile.pagesCreatedCount || 0,
+          subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai",
+          ...payload
+        });
+      }
+    } catch (err: any) {
+      console.warn("[Supabase Profiles] Falha ao sincronizar atualização de detalhes do perfil:", err.message || err);
+    }
+  }
+
   res.json(db.profile);
 });
 
 // Fetch All Generated Pages (Dashboard list)
-app.get("/api/pages", (req, res) => {
-  const db = readDB();
-  res.json(db.pages || []);
+app.get("/api/pages", async (req, res) => {
+  try {
+    const db = readDB();
+    const localPages = db.pages || [];
+
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      return res.json(localPages);
+    }
+
+    try {
+      const { data: pages, error } = await supabase
+        .from("pages")
+        .select("id, title, slug, type, status, original_url, product_name, created_at")
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+
+      if (pages && pages.length > 0) {
+        const freshDb = readDB();
+        freshDb.pages = freshDb.pages || [];
+        
+        pages.forEach((p: any) => {
+          const matchedIdx = freshDb.pages.findIndex((x: any) => x.id === p.id || x.slug === p.slug);
+          const mappedPage = {
+            id: p.id,
+            title: p.title,
+            slug: p.slug,
+            type: p.type,
+            status: p.status || 'Publicada',
+            originalUrl: p.original_url,
+            productName: p.product_name,
+            createdAt: p.created_at || new Date().toISOString()
+          };
+
+          if (matchedIdx !== -1) {
+            freshDb.pages[matchedIdx] = {
+              ...freshDb.pages[matchedIdx],
+              ...mappedPage
+            };
+          } else {
+            freshDb.pages.push({
+              ...mappedPage,
+              views: 0,
+              clicks: 0,
+              ctr: 0,
+              components: []
+            });
+          }
+        });
+        
+        writeDB(freshDb);
+        return res.json(freshDb.pages);
+      }
+    } catch (err: any) {
+      console.warn("[Supabase Pages] Erro ao carregar páginas do Supabase, usando locais:", err.message || err);
+    }
+
+    return res.json(localPages);
+  } catch (error) {
+    console.error("Erro ao listar páginas:", error);
+    try {
+      const db = readDB();
+      return res.json(db.pages || []);
+    } catch {
+      return res.json([]);
+    }
+  }
+});
+
+// Create/Save Page on Supabase & Local DB
+app.post("/api/pages", async (req, res) => {
+  const { title, slug, type, originalUrl, productName, htmlContent } = req.body;
+
+  if (!slug || !htmlContent) {
+    return res.status(400).json({ error: "Slug e conteúdo HTML são obrigatórios." });
+  }
+
+  try {
+    const cleanSlug = slug.trim().toLowerCase();
+    const pageId = `page-${Date.now()}`;
+
+    const newPage = {
+      id: pageId,
+      title: title || "Página Sem Título",
+      slug: cleanSlug,
+      type: type || "Landing Page",
+      status: "Publicada",
+      originalUrl: originalUrl || null,
+      productName: productName || "Produto",
+      createdAt: new Date().toISOString(),
+      views: 0,
+      clicks: 0,
+      ctr: 0,
+      components: []
+    };
+
+    // Salva localmente primeiro
+    const db = readDB();
+    if (db.pages.some((p: any) => p.slug === cleanSlug)) {
+      return res.status(400).json({ error: "Este link/slug já está em uso por outra página." });
+    }
+    db.pages.push(newPage);
+    writeDB(db);
+    addLog("Salvar Página", `Página "${newPage.title}" salva com sucesso.`);
+
+    if (supabase) {
+      try {
+        const sbPage = {
+          id: pageId,
+          title: title || "Página Sem Título",
+          slug: cleanSlug,
+          type: type || "Landing Page",
+          status: "Publicada",
+          original_url: originalUrl || null,
+          product_name: productName || "Produto",
+          html_content: htmlContent,
+          created_at: newPage.createdAt
+        };
+
+        const { error } = await supabase
+          .from("pages")
+          .insert([sbPage]);
+
+        if (error) {
+          console.warn("[Supabase Pages] Erro ao inserir no Supabase:", error.message);
+        }
+      } catch (sbErr: any) {
+        console.warn("[Supabase Pages] Exceção na sincronização do Supabase:", sbErr.message || sbErr);
+      }
+    }
+
+    return res.status(201).json({ 
+      success: true, 
+      page: {
+        id: newPage.id,
+        title: newPage.title,
+        slug: newPage.slug,
+        type: newPage.type,
+        status: newPage.status
+      } 
+    });
+  } catch (error) {
+    console.error("Erro ao salvar nova página:", error);
+    return res.status(500).json({ error: "Falha ao salvar a página." });
+  }
 });
 
 // Update page details (The Drag-and-Drop Save UI endpoint)
@@ -1098,6 +1775,27 @@ app.put("/api/pages/:id", (req, res) => {
     };
     writeDB(db);
     addLog("Edição de Página", `A página "${db.pages[pIndex].title}" foi atualizada pelo editor visual.`);
+
+    if (supabase) {
+      try {
+        const updatedPage = db.pages[pIndex];
+        const htmlContent = compilePageHtml(updatedPage, db);
+        supabase.from("pages").update({
+          title: updatedPage.title,
+          type: updatedPage.type,
+          html_content: htmlContent
+        }).eq("id", id).then(({ error }) => {
+          if (error) {
+            console.warn("[Supabase Pages] Erro ao sincronizar edição no Supabase:", error.message);
+          } else {
+            console.log(`[Supabase Pages] Edição sincronizada com sucesso para id: ${id}`);
+          }
+        });
+      } catch (sbErr: any) {
+        console.warn("[Supabase Pages] Exceção ao sincronizar edição:", sbErr.message || sbErr);
+      }
+    }
+
     res.json(db.pages[pIndex]);
   } else {
     res.status(404).json({ error: "Página não encontrada." });
@@ -1131,9 +1829,108 @@ app.post("/api/pages/:id/duplicate", (req, res) => {
     db.pages.push(duplicate);
     writeDB(db);
     addLog("Duplicação de Página", `Cópia criada com sucesso da página: ${page.title}`);
+
+    if (supabase) {
+      try {
+        const htmlContent = compilePageHtml(duplicate, db);
+        const sbPage = {
+          id: duplicate.id,
+          title: duplicate.title,
+          slug: duplicate.slug,
+          type: duplicate.type,
+          status: duplicate.status || 'Publicada',
+          original_url: duplicate.originalUrl || null,
+          product_name: duplicate.productName || "Produto",
+          html_content: htmlContent,
+          created_at: duplicate.createdAt
+        };
+        supabase.from("pages").insert([sbPage]).then(({ error }) => {
+          if (error) {
+            console.warn("[Supabase Pages] Erro no sync de duplicação:", error.message);
+          } else {
+            console.log(`[Supabase Pages] Duplicação sincronizada no Supabase: ${duplicate.slug}`);
+          }
+        });
+      } catch (sbErr: any) {
+        console.warn("[Supabase Pages] Exceção após duplicação:", sbErr.message || sbErr);
+      }
+    }
+
     res.json(duplicate);
   } else {
     res.status(404).json({ error: "Página não encontrada." });
+  }
+});
+
+// Import Page from Backup or HTML metadata
+app.post("/api/pages/import", (req, res) => {
+  const { pageData } = req.body;
+  if (!pageData || !pageData.slug || !pageData.components) {
+    return res.status(400).json({ error: "Dados de importação inválidos ou incompletos." });
+  }
+
+  try {
+    const db = readDB();
+
+    // Check Plan Limits
+    const limit = db.profile.planId === "starter" ? 10 : db.profile.planId === "pro" ? 50 : 999999;
+    const currentCount = (db.pages || []).length;
+    if (currentCount >= limit) {
+      return res.status(422).json({ error: `Você atingiu o limite de ${limit} páginas para o plano ${db.profile.planId.toUpperCase()}. Por favor, faça um upgrade para importar.` });
+    }
+
+    // Ensure unique slug
+    let finalSlug = pageData.slug.trim().toLowerCase();
+    let counter = 1;
+    while ((db.pages || []).some((p: any) => p.slug === finalSlug)) {
+      finalSlug = `${pageData.slug}-${counter}`;
+      counter++;
+    }
+
+    const importedPage = {
+      ...pageData,
+      id: "p_" + Math.random().toString(36).substr(2, 9),
+      slug: finalSlug,
+      createdAt: new Date().toISOString(),
+      views: 0,
+      clicks: 0,
+      ctr: 0
+    };
+
+    db.pages = db.pages || [];
+    db.pages.push(importedPage);
+    writeDB(db);
+
+    addLog("Importação de Página", `Página "${importedPage.title}" importada e restaurada a partir do HTML.`);
+
+    if (supabase) {
+      try {
+        const htmlContent = compilePageHtml(importedPage, db);
+        const sbPage = {
+          id: importedPage.id,
+          title: importedPage.title,
+          slug: importedPage.slug,
+          type: importedPage.type,
+          status: importedPage.status || "Publicada",
+          original_url: importedPage.originalUrl || null,
+          product_name: importedPage.productName || "Produto",
+          html_content: htmlContent,
+          created_at: importedPage.createdAt
+        };
+        supabase.from("pages").insert([sbPage]).then(({ error }) => {
+          if (error) {
+            console.warn("[Supabase Pages] Erro no sync da importação:", error.message);
+          }
+        });
+      } catch (sbErr: any) {
+        console.warn("[Supabase Pages] Exceção após importação:", sbErr.message || sbErr);
+      }
+    }
+
+    res.status(201).json({ success: true, page: importedPage });
+  } catch (err: any) {
+    console.error("Erro ao importar página:", err);
+    res.status(500).json({ error: "Erro interno do servidor ao importar os dados da página." });
   }
 });
 
@@ -1147,6 +1944,21 @@ app.delete("/api/pages/:id", (req, res) => {
     db.pages.splice(pIdx, 1);
     writeDB(db);
     addLog("Exclusão de Página", `A página "${deletedName}" foi excluída com sucesso.`);
+
+    if (supabase) {
+      try {
+        supabase.from("pages").delete().eq("id", id).then(({ error }) => {
+          if (error) {
+            console.warn("[Supabase Pages] Erro no sync de exclusão:", error.message);
+          } else {
+            console.log(`[Supabase Pages] Remoção sincronizada no Supabase id: ${id}`);
+          }
+        });
+      } catch (sbErr: any) {
+        console.warn("[Supabase Pages] Exceção na sincronização de exclusão:", sbErr.message || sbErr);
+      }
+    }
+
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Página não encontrada." });
@@ -1239,12 +2051,42 @@ app.post("/api/pages/generate", async (req, res) => {
       cookie_destination_slug: cookie_destination_slug || "",
       cookie_destination_url: cookie_destination_url || affiliate_link || url,
       cookie_display_delay: Number(cookie_display_delay) !== undefined ? Number(cookie_display_delay) : 0,
-      cookie_appearance: cookie_appearance || "modal"
+      cookie_appearance: cookie_appearance || "modal",
+      scrapedImages: aiData.scrapedImages
     };
 
     db.pages.push(newPage);
     writeDB(db);
     addLog("Criação Automática por IA", `Página "${newPage.title}" gerada com sucesso e cadastrada no domínio ${cleanDomain}!`);
+
+    if (supabase) {
+      try {
+        const htmlContent = compilePageHtml(newPage, db);
+        const sbPage = {
+          id: newPage.id,
+          title: newPage.title,
+          slug: newPage.slug,
+          type: newPage.type,
+          status: newPage.status,
+          original_url: newPage.originalUrl,
+          product_name: newPage.productName,
+          html_content: htmlContent,
+          created_at: newPage.createdAt
+        };
+
+        const { error } = await supabase
+          .from("pages")
+          .insert([sbPage]);
+
+        if (error) {
+          console.warn("[Supabase Pages] Erro no sync da página gerada automaticamente:", error.message);
+        } else {
+          console.log(`[Supabase Pages] Página gerada sincronizada com sucesso: ${newPage.slug}`);
+        }
+      } catch (sbErr: any) {
+        console.warn("[Supabase Pages] Exceção na sincronização automática do Supabase:", sbErr.message || sbErr);
+      }
+    }
 
     res.json(newPage);
   } catch (err: any) {
@@ -1275,6 +2117,7 @@ app.post("/api/pages/:id/regenerate", async (req, res) => {
     // Keep existing metadata, only reconstruct copy components
     existingPage.components = components;
     existingPage.productName = aiData.productName || existingPage.productName || "Produto";
+    existingPage.scrapedImages = aiData.scrapedImages;
     existingPage.createdAt = new Date().toISOString(); 
 
     db.pages[pageIdx] = existingPage;
@@ -1396,9 +2239,182 @@ function compilePageHtml(page: any, db: any): string {
     const cookieText = headlineComp?.content?.text || "Utilizamos cookies para personalizar conteúdo, analisar tráfego e oferecer uma melhor experiência ao usuário. Ao continuar navegando, você concorda com nossa política de privacidade e uso de cookies.";
     const cookieCta = buttonComp?.content?.buttonText || "Aceitar e Continuar";
     
-    // Fallback or custom destination link
-    const destinationUrl = page.cookie_destination_url || page.affiliate_link || "#";
+    // Fallback or custom destination link (User requested prioritizing affiliate link over producer link to prevent leak)
+    const destinationUrl = page.affiliate_link || page.cookie_destination_url || "#";
     const language = page.generation_language || "pt";
+
+    const productName = page.productName || page.product_name || "Meticore";
+    let logoUrl = "";
+    let mainProductImg = "";
+    let benefitImg = "";
+
+    // Primeiro tenta puxar mídias da própria página de de cookies
+    if (page.scrapedImages) {
+      if (page.scrapedImages.logoImage) {
+        logoUrl = page.scrapedImages.logoImage;
+      }
+      if (page.scrapedImages.mainProductImage) {
+        mainProductImg = page.scrapedImages.mainProductImage;
+      } else if (page.scrapedImages.secondaryImages && page.scrapedImages.secondaryImages.length > 0) {
+        mainProductImg = page.scrapedImages.secondaryImages[0];
+      }
+      if (page.scrapedImages.benefitImages && page.scrapedImages.benefitImages.length > 0) {
+        benefitImg = page.scrapedImages.benefitImages[0];
+      } else if (page.scrapedImages.secondaryImages && page.scrapedImages.secondaryImages.length > 1) {
+        benefitImg = page.scrapedImages.secondaryImages[1];
+      }
+    }
+
+    if (page.components) {
+      const headline = page.components.find((c: any) => c.type === "headline" && c.content?.logo);
+      if (headline?.content?.logo) {
+        logoUrl = logoUrl || headline.content.logo;
+      }
+      const imgs = page.components.filter((c: any) => c.type === "image" && c.content?.src);
+      if (imgs.length > 0) {
+        mainProductImg = mainProductImg || imgs[0].content.src;
+        if (imgs.length > 1) {
+          benefitImg = benefitImg || imgs[1].content.src;
+        }
+      }
+    }
+
+    // Procura outras páginas do mesmo produto para reaproveitar mídias e logos reais
+    const sameProductPages = (db.pages || []).filter((p: any) => 
+      p.id !== page.id && 
+      (p.productName || p.product_name) &&
+      (String(p.productName).toLowerCase() === String(productName).toLowerCase() || 
+       String(p.product_name).toLowerCase() === String(productName).toLowerCase() ||
+       String(p.productName).toLowerCase() === String(page.product_name || "").toLowerCase() ||
+       String(p.product_name).toLowerCase() === String(page.product_name || "").toLowerCase())
+    );
+
+    if (!logoUrl) {
+      for (const p of sameProductPages) {
+        if (p.components) {
+          const headline = p.components.find((c: any) => c.type === "headline" && c.content?.logo);
+          if (headline?.content?.logo) {
+            logoUrl = headline.content.logo;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!mainProductImg || !benefitImg) {
+      for (const p of sameProductPages) {
+        if (p.components) {
+          const imgs = p.components.filter((c: any) => c.type === "image" && c.content?.src);
+          if (imgs.length > 0) {
+            mainProductImg = mainProductImg || imgs[0].content.src;
+            if (imgs.length > 1) {
+              benefitImg = benefitImg || imgs[1].content.src;
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // Fallbacks elegantes se não houver mídias no BD
+    if (!mainProductImg) {
+      mainProductImg = `/api/fallback-image?product=${encodeURIComponent(productName)}`;
+    }
+    if (!benefitImg) {
+      benefitImg = `/api/fallback-image?product=${encodeURIComponent(productName)}&benefit=true`;
+    }
+
+    const bgLocals: Record<string, any> = {
+      pt: {
+        specCheck: "✨ FÓRMULA CLÍNICA EXCLUSIVA E TESTADA EM 2026",
+        officialSupply: "Distribuição Oficial Direta do Fabricante",
+        satisfactoryRate: "99.4% de Satisfação",
+        satisfactoryDesc: "Nível médio de aprovação documentado entre as dezenas de milhares de clientes ativos.",
+        secureConn: "Conexão Criptografada",
+        secureConnDesc: "Seu canal é 100% verificado e assegurado com certificação de nível comercial SSL.",
+        qualityCert: "Instalações Controladas",
+        qualityCertDesc: "As diretrizes seguem normas rigorosas de pureza de insumos e manufatura de ponta.",
+        specReviewTitle: "Lista de Verificação Oficial de Qualidade",
+        specReviewFeature: "Fator de Avaliação",
+        specReviewAlt: "Outras Marcas do Mercado",
+        yesMarker: "Sim (✓)",
+        noMarker: "Não (⨉)",
+        certRaw: "Matérias-primas importadas com controle de lote integrado",
+        certRatio: "Proporções estudadas e otimizadas cientificamente",
+        certGuarantee: "Satisfação garantida ou devolução total em 30 dias",
+        officialDirect: `${productName} - Distribuidor Oficial`,
+        disclaimer: "Informação Importante: As opiniões expressas neste portal de aquecimento são de cunho estritamente informativo e de conteúdo educacional. Os resultados práticos de satisfação relatados podem flutuar dependendo do organismo do usuário.",
+        footerText: `© 2026 ${productName}. Todos os direitos de propriedade intelectual reservados.`,
+        heroHeadline: `A inovadora fórmula cientificamente balanceada de <span class="text-blue-600">${productName}</span>.`,
+        heroSub: "Desenvolvida com ingredientes puros estudados exaustivamente sob os mais rígidos preceitos de qualidade de mercado. Faça como os mais de 145.000 clientes satisfeitos no mundo inteiro.",
+        benefits: ["Ingredientes 100% Puros e Selecionados", "Livre de Alergênicos ou Organismos OGM", "Recomendado por Especialistas", "Garantia Integral de Reembolso do Fabricador"],
+        secureAccess: "Conexão 100% Segura pelo Fabricante",
+        details: "Detalhes do Produto",
+        research: "Estudos Científicos",
+        testimonials: "Opiniões Reais",
+        faq: "Perguntas e Respostas"
+      },
+      en: {
+        specCheck: "✨ EXCLUSIVE CLINICALLY TESTED FORMULA 2026",
+        officialSupply: "Manufacturer Direct Official Supply Network",
+        satisfactoryRate: "99.4% Approval Rate",
+        satisfactoryDesc: "Verified average satisfaction reported across over a hundred thousand active customers.",
+        secureConn: "Secure Encryption",
+        secureConnDesc: "Your channel is 100% encrypted and protected through state-of-the-art SSL layers.",
+        qualityCert: "FDA Registered Premises",
+        qualityCertDesc: "High sanitation protocols and sterile testing at every manufacturing batch.",
+        specReviewTitle: "Official Qualificative Verification Table",
+        specReviewFeature: "Rating Factor",
+        specReviewAlt: "Average Market Substitutes",
+        yesMarker: "Yes (✓)",
+        noMarker: "No (⨉)",
+        certRaw: "Active premium raw imports with thorough chemical tracking",
+        certRatio: "Scientifically accurate ratios optimized for absorption",
+        certGuarantee: "Unconditional 30-day satisfaction backup coverage",
+        officialDirect: `${productName} - Official Supplier`,
+        disclaimer: "Important Legal Notice: The reviews and research outcomes hosted on this site are for general informative insights only. Reported biological performance outcomes vary individually.",
+        footerText: `© 2026 ${productName}. Intellectual property rights secured.`,
+        heroHeadline: `The dynamic breakthrough formula of <span class="text-blue-600">${productName}</span>.`,
+        heroSub: "Enriched with selected natural elements sourced cleanly and formulated within fully certified standard facilities. Join more than 145,000 active global clients.",
+        benefits: ["100% Highly Bioavailable Active Compounds", "Zero Artificial Fillers and Non-GMO", "Scientifically Recommended Pathways", "30-Day Safe Full Satisfaction Refund Card"],
+        secureAccess: "100% Secure & Encrypted Connection",
+        details: "Product Details",
+        research: "Clinical Science",
+        testimonials: "User Reviews",
+        faq: "FAQs"
+      },
+      es: {
+        specCheck: "✨ FÓRMULA CLÍNICA EXCLUSIVA TESTEADA EN 2026",
+        officialSupply: "Distribución Oficial Directa de Fábrica",
+        satisfactoryRate: "99.4% de Satisfacción",
+        satisfactoryDesc: "Nivel de satisfacción documentado a través de miles de comentarios de clientes.",
+        secureConn: "Firma Criptográfica",
+        secureConnDesc: "Su canal de navegación tiene certificación comercial SSL verificado de extremo a extremo.",
+        qualityCert: "Instalaciones de Calidad",
+        qualityCertDesc: "Cada lote se formula bajo estrictos estándares de higiene y control aséptico.",
+        specReviewTitle: "Ficha Técnica Oficial del Suplemento",
+        specReviewFeature: "Factor de Evaluación",
+        specReviewAlt: "Otras Marcas del Mercado",
+        yesMarker: "Sí (✓)",
+        noMarker: "No (⨉)",
+        certRaw: "Ingredientes premium rastreables desde origen",
+        certRatio: "Proporciones clínicamente respaldadas para máxima acción",
+        certGuarantee: "Protección total de reembolso del producto en 30 días",
+        officialDirect: `${productName} - Distribuidor Oficial`,
+        disclaimer: "Aviso de Divulgación: Este sitio es meramente de carácter informativo. Las marcas comerciales que aparecen en este portal pertenecen a sus legítimos dueños de propiedad industrial.",
+        footerText: `© 2026 ${productName}. Todos los derechos de propiedad reservados.`,
+        heroHeadline: `El revolucionario avance de nutrición celular con <span class="text-blue-600">${productName}</span>.`,
+        heroSub: "Elaborado con fitoquímicos naturales probados en laboratorios de excelente estándar clínico. Elige la calidad elegida por más de 145,000 personas.",
+        benefits: ["Ingredientes Naturales 100% Puros", "Formulado Sin Aditivos Químicos ni OGM", "Recomendado por Especialistas Clínicos", "Garantía del Fabricante por 30 Días"],
+        secureAccess: "Conexión 100% Segura del Fabricante",
+        details: "Detalles Técnicos",
+        research: "Estudios Científicos",
+        testimonials: "Opiniones Reales",
+        faq: "Preguntas Frecuentes"
+      }
+    };
+
+    const bgLoc = bgLocals[language] || bgLocals.en || bgLocals.pt;
 
     // Dynamic localized labels and policies links
     const locals: Record<string, any> = {
@@ -1415,7 +2431,11 @@ function compilePageHtml(page: any, db: any): string {
         legal: "Aviso Legal: Ao aceitar, coletamos consentimento para melhorar sua experiência de navegação.",
         back: "AdsCreator AI - Conexão Segura e Criptografada",
         fallbackLoader: "Estabelecendo túnel de conexão criptografada com o fabricante...",
-        alertText: "Sua navegação está totalmente segura. Esta política descreve como os cookies ajudam a otimizar as comunicações com o fabricante oficial do produto"
+        alertText: "Sua navegação está totalmente segura. Esta política descreve como os cookies ajudam a otimizar as comunicações com o fabricante oficial do produto",
+        privacyHeading: "Valorizamos sua privacidade",
+        btnCustomize: "Personalizar",
+        btnReject: "Rejeitar",
+        btnAccept: "Aceitar Todos"
       },
       en: {
         req: "Necessary Cookies (Always Active)",
@@ -1430,7 +2450,11 @@ function compilePageHtml(page: any, db: any): string {
         legal: "Legal Note: By clicking, you consent to our security protocols and privacy policies for optimized navigation.",
         back: "AdsCreator AI - 100% Encrypted & Secure SSL Handshake",
         fallbackLoader: "Establishing secure SSL connection to primary product servers...",
-        alertText: "Your navigation is completely secure. This policy describes how cookies help optimize communications with the official manufacturer of the product"
+        alertText: "Your navigation is completely secure. This policy describes how cookies help optimize communications with the official manufacturer of the product",
+        privacyHeading: "We value your privacy",
+        btnCustomize: "Customize",
+        btnReject: "Reject All",
+        btnAccept: "Accept All"
       },
       es: {
         req: "Cookies Necesarias (Siempre Activas)",
@@ -1445,7 +2469,11 @@ function compilePageHtml(page: any, db: any): string {
         legal: "Nota Legal: Al aceptar, otorga consentimiento para optimizar la seguridad y los complementos de la página.",
         back: "AdsCreator AI - Conexión Segura y Encriptada en SSL",
         fallbackLoader: "Estableciendo cifrado SSL seguro de canal...",
-        alertText: "Su navegación es completamente segura. Esta política describe cómo las cookies ayudan a optimizar las comunicaciones con el fabricante oficial del producto"
+        alertText: "Su navegación es completamente segura. Esta política describe cómo las cookies ayudan a optimizar las comunicaciones con el fabricante oficial del producto",
+        privacyHeading: "Valoramos su privacidad",
+        btnCustomize: "Personalizar",
+        btnReject: "Rechazar todo",
+        btnAccept: "Aceptar todo"
       },
       it: {
         req: "Cookie Necessari (Sempre Attivi)",
@@ -1460,7 +2488,11 @@ function compilePageHtml(page: any, db: any): string {
         legal: "Nota Legale: Continuando, fornisci l'assenso alle metriche e alle norme sulla privacy del produttore.",
         back: "AdsCreator AI - Connessione Crittografata Sicura SSL",
         fallbackLoader: "Inizializzazione della connessione protetta e privata in corso...",
-        alertText: "La tua navigazione è completamente sicura. Questa informativa descrive come i cookie aiutino a ottimizzare le comunicazioni con il produttore ufficiale del produttore"
+        alertText: "La tua navigazione è completamente sicura. Questa informativa descrive come i cookie aiutino a ottimizzare le comunicazioni con il produttore ufficiale del produttore",
+        privacyHeading: "Diamo valore alla tua privacy",
+        btnCustomize: "Personalizza",
+        btnReject: "Rifiuta tutto",
+        btnAccept: "Accetta tutto"
       },
       fr: {
         req: "Cookies Nécessaires (Toujours Actifs)",
@@ -1475,7 +2507,11 @@ function compilePageHtml(page: any, db: any): string {
         legal: "Note Légale : En acceptant, vous consentez à nos protocoles de sécurité et politiques de confidentialité.",
         back: "AdsCreator AI - Connexion Sécurisée et Cryptée en SSL",
         fallbackLoader: "Établissement d'un tunnel de connexion sécurisée avec le fabricant...",
-        alertText: "Votre navigation est totalement sécurisée. Cette politique décrit comment les cookies aident à optimiser les communications avec le fabricant officiel du produit"
+        alertText: "Votre navigation est totalement sécurisée. Cette politique décrit comment les cookies aident à optimiser les communications avec le fabricant officiel du produit",
+        privacyHeading: "Nous respectons votre vie privée",
+        btnCustomize: "Personnaliser",
+        btnReject: "Tout rejeter",
+        btnAccept: "Tout accepter"
       }
     };
 
@@ -1484,23 +2520,23 @@ function compilePageHtml(page: any, db: any): string {
     const appearance = page.cookie_appearance || "modal";
 
     // Set interactive visual styling classes according to appearance
-    let overlayClass = "bg-slate-950/90 backdrop-blur-md";
-    let containerClass = "max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl p-8";
+    let overlayClass = "bg-slate-900/40 backdrop-blur-[6px]";
+    let containerClass = "max-w-xl bg-white border border-slate-100 rounded-[28px] p-6 md:p-8 shadow-2xl relative text-slate-800 z-30 transition-all duration-300 transform scale-100";
 
     if (appearance === "fullscreen") {
-      overlayClass = "bg-slate-950";
-      containerClass = "w-full max-w-4xl bg-slate-950 text-left p-12 min-h-screen flex flex-col justify-center";
+      overlayClass = "bg-slate-950/70 backdrop-blur-[10px]";
+      containerClass = "w-full max-w-3xl bg-white border border-slate-100 rounded-[32px] text-left p-8 md:p-12 shadow-2xl flex flex-col justify-center relative z-30 my-8";
     } else if (appearance === "bottom_bar") {
-      overlayClass = "bg-transparent pointer-events-none";
-      containerClass = "fixed bottom-0 left-0 right-0 max-w-none bg-slate-900 border-t border-slate-800 rounded-t-3xl p-8 w-full pointer-events-auto z-50 shadow-2xl";
+      overlayClass = "bg-slate-900/10 backdrop-blur-[2px] pointer-events-none";
+      containerClass = "fixed bottom-0 left-0 right-0 max-w-none bg-white border-t border-slate-200 rounded-t-[32px] p-8 w-full pointer-events-auto z-50 shadow-[0_-15px_30px_-5px_rgba(0,0,0,0.1)] text-slate-850";
     } else if (appearance === "popup") {
-      overlayClass = "bg-transparent pointer-events-none";
-      containerClass = "fixed bottom-6 right-6 max-w-sm bg-slate-900 border border-slate-800 rounded-2xl p-6 pointer-events-auto z-50 shadow-2xl";
+      overlayClass = "bg-slate-900/10 backdrop-blur-[2px] pointer-events-none";
+      containerClass = "fixed bottom-6 right-6 max-w-md bg-white border border-slate-100 rounded-[24px] p-6 pointer-events-auto z-50 shadow-[0_10px_35px_-5px_rgba(0,0,0,0.15)] text-slate-850";
     }
 
     return `
       <!DOCTYPE html>
-      <html lang="${language}" class="scroll-smooth bg-slate-950 font-sans">
+      <html lang="${language}" class="scroll-smooth bg-slate-50 font-sans">
         <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1558,12 +2594,185 @@ function compilePageHtml(page: any, db: any): string {
             }(window, document, 'ttq');
           </script>` : ""}
         </head>
-        <body class="text-slate-100 antialiased selection:bg-green-400 selection:text-slate-950 min-h-screen relative flex items-center justify-center overflow-x-hidden">
+        <body class="bg-slate-50 text-slate-800 antialiased selection:bg-blue-500 selection:text-white min-h-screen relative flex items-center justify-center overflow-x-hidden pt-12 pb-24 font-sans">
           
-          <!-- Background decorative elements for premium context -->
-          <div class="fixed inset-0 bg-[#020617] -z-20 overflow-hidden">
-            <div class="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-sky-950/20 rounded-full blur-[120px]"></div>
-            <div class="absolute bottom-1/4 left-1/3 w-[300px] h-[300px] bg-indigo-950/20 rounded-full blur-[100px]"></div>
+          <!-- BACKGROUND UNDERLAY: REAL STATIC SCREENSHOT OF THE PRODUCT PAGE OR SIMULATED INTERACTIVE DESIGN FALLBACK -->
+          ${destinationUrl && destinationUrl.includes("://") ? `
+          <div class="absolute inset-0 w-full min-h-screen select-none pointer-events-none overflow-hidden z-0 bg-white flex justify-center items-start">
+            <img src="https://image.thum.io/get/width/1280/crop/1000/maxAge/12/${destinationUrl}" 
+                 onerror="this.onerror=null; this.src='https://s.wordpress.com/mshots/v1/${encodeURIComponent(destinationUrl)}?w=1280';" 
+                 alt="Product Page Background Preview" 
+                 class="w-full h-auto min-h-screen object-cover object-top opacity-100 shrink-0" />
+          </div>
+          ` : `
+          <!-- REALISTIC DETAILED PRODUCT PAGE UNDERLAY (FALLBACK) -->
+          <div class="absolute inset-0 w-full min-h-full bg-slate-50 flex flex-col items-center select-none pointer-events-none opacity-90 overflow-hidden z-0">
+            
+            <!-- Beautiful Real Custom Navbar -->
+            <header class="w-full bg-white border-b border-slate-100 py-4 px-6 md:px-12 flex justify-between items-center shadow-xs">
+              <div class="flex items-center gap-3">
+                ${logoUrl ? `
+                  <img src="${logoUrl}" alt="${productName}" class="h-10 max-w-[120px] object-contain" />
+                ` : `
+                  <div class="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white font-black text-sm shadow-sm">
+                    ${productName.substring(0, 2).toUpperCase()}
+                  </div>
+                  <span class="font-extrabold text-slate-900 text-lg tracking-tight">${productName}</span>
+                `}
+                <span class="bg-blue-50 text-blue-600 text-[9px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border border-blue-100/30">
+                  <span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+                  ${bgLoc.secureAccess}
+                </span>
+              </div>
+              <div class="hidden md:flex items-center gap-6 text-xs font-semibold text-slate-500">
+                <span>${bgLoc.details}</span>
+                <span>${bgLoc.research}</span>
+                <span>${bgLoc.testimonials}</span>
+                <span>${bgLoc.faq}</span>
+                <span class="flex items-center gap-1 text-green-600 font-bold bg-green-50 px-2 py-1 rounded">
+                  🛡️ SSL Encrypted Connection
+                </span>
+              </div>
+            </header>
+
+            <!-- Main Page Stage Area -->
+            <main class="w-full max-w-6xl px-4 md:px-8 py-10 flex flex-col gap-10">
+              
+              <!-- Hero grid section -->
+              <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center text-left">
+                <div class="lg:col-span-7 flex flex-col gap-4">
+                  <span class="inline-flex items-center gap-1.5 text-[11px] font-mono font-black uppercase text-blue-600 tracking-widest bg-blue-50 border border-blue-200/20 rounded-full px-3 py-1 self-start">
+                    ${bgLoc.specCheck}
+                  </span>
+                  <h1 class="text-3xl md:text-5xl font-black text-slate-900 tracking-tight leading-tight">
+                    ${bgLoc.heroHeadline}
+                  </h1>
+                  <p class="text-slate-500 text-sm md:text-base leading-relaxed">
+                    ${bgLoc.heroSub}
+                  </p>
+                  
+                  <!-- Benefits Checklist Grid -->
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2 text-xs font-bold text-slate-700">
+                    <div class="flex items-center gap-2">
+                      <span class="text-green-500 text-base">✓</span> ${bgLoc.benefits[0]}
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-green-500 text-base">✓</span> ${bgLoc.benefits[1]}
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-green-500 text-base">✓</span> ${bgLoc.benefits[2]}
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-green-500 text-base">✓</span> ${bgLoc.benefits[3]}
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Product display image right-side -->
+                <div class="lg:col-span-5 flex justify-center">
+                  <div class="relative bg-white border border-slate-100 p-6 rounded-[24px] shadow-sm max-w-sm w-full flex flex-col items-center">
+                    <img src="${mainProductImg}" alt="${productName}" class="max-h-[200px] object-contain mb-4 transform scale-100" />
+                    <div class="w-full text-center">
+                      <div class="text-[10px] font-mono font-bold uppercase text-slate-400 tracking-wider">${bgLoc.officialSupply}</div>
+                      <div class="font-extrabold text-slate-800 text-xs mt-1">${productName} Supreme Bio-Active</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Divider line -->
+              <hr class="border-slate-200/60" />
+
+              <!-- Technical rating section -->
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
+                <div class="bg-white border border-slate-100 p-5 rounded-2xl shadow-xs">
+                  <div class="text-[10px] font-mono text-blue-600 font-extrabold uppercase tracking-wide">METRICS</div>
+                  <div class="text-2xl font-black text-slate-900 mt-1">${bgLoc.satisfactoryRate}</div>
+                  <p class="text-slate-450 text-[11px] text-slate-500 mt-1">${bgLoc.satisfactoryDesc}</p>
+                </div>
+                <div class="bg-white border border-slate-100 p-5 rounded-2xl shadow-xs">
+                  <div class="text-[10px] font-mono text-purple-600 font-extrabold uppercase tracking-wide">SECURE CHANNELS</div>
+                  <div class="text-2xl font-black text-slate-900 mt-1">${bgLoc.secureConn}</div>
+                  <p class="text-slate-450 text-[11px] text-slate-500 mt-1">${bgLoc.secureConnDesc}</p>
+                </div>
+                <div class="bg-white border border-slate-100 p-5 rounded-2xl shadow-xs">
+                  <div class="text-[10px] font-mono text-green-600 font-extrabold uppercase tracking-wide">CERTIFICATION</div>
+                  <div class="text-2xl font-black text-slate-900 mt-1">${bgLoc.qualityCert}</div>
+                  <p class="text-slate-450 text-[11px] text-slate-500 mt-1">${bgLoc.qualityCertDesc}</p>
+                </div>
+              </div>
+
+              <!-- Product comparison chart -->
+              <div class="bg-white border border-slate-100 p-6 rounded-[24px] shadow-xs text-left">
+                <h3 class="text-sm font-extrabold text-slate-950 mb-4">${bgLoc.specReviewTitle}</h3>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-xs text-slate-650">
+                    <thead>
+                      <tr class="border-b border-slate-100 text-slate-450">
+                        <th class="pb-3 font-bold text-left">${bgLoc.specReviewFeature}</th>
+                        <th class="pb-3 font-extrabold text-center text-blue-600">${productName}</th>
+                        <th class="pb-3 font-bold text-center">${bgLoc.specReviewAlt}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr class="border-b border-slate-100/60 py-2.5">
+                        <td class="py-3 font-bold text-slate-800">${bgLoc.certRaw}</td>
+                        <td class="py-3 text-center text-green-500 font-black">${bgLoc.yesMarker}</td>
+                        <td class="py-3 text-center text-slate-400">${bgLoc.noMarker}</td>
+                      </tr>
+                      <tr class="border-b border-slate-100/60 py-2.5">
+                        <td class="py-3 font-bold text-slate-800">${bgLoc.certRatio}</td>
+                        <td class="py-3 text-center text-green-500 font-black">${bgLoc.yesMarker}</td>
+                        <td class="py-3 text-center text-slate-400">Not Optimized</td>
+                      </tr>
+                      <tr class="border-b border-slate-100/60 py-2.5">
+                        <td class="py-3 font-bold text-slate-800">${bgLoc.certGuarantee}</td>
+                        <td class="py-3 text-center text-green-500 font-black">30 Days Return</td>
+                        <td class="py-3 text-center text-slate-400">None</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+            </main>
+
+            <!-- Complete detailed footer disclaimer -->
+            <footer class="w-full mt-auto bg-slate-900 text-slate-400 py-12 px-6 border-t border-slate-800 text-center">
+              <div class="max-w-4xl mx-auto flex flex-col gap-4 text-xs">
+                <div class="font-extrabold text-slate-200">${bgLoc.officialDirect}</div>
+                <p class="text-[10px] text-slate-500 leading-relaxed">
+                  ${bgLoc.disclaimer}
+                </p>
+                <div class="text-[10px] text-slate-500 pt-2 border-t border-slate-800/50">
+                  ${bgLoc.footerText}
+                </div>
+              </div>
+            </footer>
+
+          </div>
+          `}>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+            </main>
+
+            <!-- Complete detailed footer disclaimer -->
+            <footer class="w-full mt-auto bg-slate-900 text-slate-400 py-12 px-6 border-t border-slate-800 text-center">
+              <div class="max-w-4xl mx-auto flex flex-col gap-4 text-xs">
+                <div class="font-extrabold text-slate-200">${bgLoc.officialDirect}</div>
+                <p class="text-[10px] text-slate-500 leading-relaxed">
+                  ${bgLoc.disclaimer}
+                </p>
+                <div class="text-[10px] text-slate-500 pt-2 border-t border-slate-800/50">
+                  ${bgLoc.footerText}
+                </div>
+              </div>
+            </footer>
+
           </div>
 
           <!-- DYNAMIC CONNECTION LOADER (TEMPO DE EXIBIÇÃO) -->
@@ -1576,7 +2785,7 @@ function compilePageHtml(page: any, db: any): string {
               </svg>
               <div class="absolute text-[10px] font-mono text-green-400 font-bold">SSL</div>
             </div>
-            <p class="text-xs font-mono text-slate-450 text-slate-400 max-w-sm text-center leading-relaxed font-bold animate-pulse">
+            <p class="text-xs font-mono text-slate-400 max-w-sm text-center leading-relaxed font-bold animate-pulse">
               ${currentLoc.fallbackLoader}
             </p>
           </div>
@@ -1595,81 +2804,90 @@ function compilePageHtml(page: any, db: any): string {
           <div class="fixed inset-0 z-40 flex items-center justify-center p-4 overflow-y-auto ${overlayClass}">
             <div class="${containerClass} w-full transition-all duration-300 transform scale-100 shadow-2xl relative">
               
-              <!-- Subtle badge -->
-              <div class="flex items-center gap-2 mb-5">
-                <span class="inline-flex w-2.5 h-2.5 rounded-full bg-green-500 animate-ping"></span>
-                <span class="text-[10px] font-mono font-black uppercase text-green-400 tracking-widest bg-green-950/40 border border-green-800/60 rounded-full px-2.5 py-0.5">${currentLoc.back}</span>
+              <!-- Privacy title & Shield with optimized user visual guidelines -->
+              <div class="flex items-center gap-3.5 mb-5 select-none text-left">
+                <div class="w-11 h-11 rounded-2xl bg-blue-50/80 border border-blue-100 flex items-center justify-center text-blue-600 shadow-sm shrink-0">
+                  <svg class="w-5.5 h-5.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                  </svg>
+                </div>
+                <div class="text-left">
+                  <h2 class="text-[17px] font-black text-slate-900 tracking-tight leading-none mb-1">${currentLoc.privacyHeading}</h2>
+                  <span class="inline-flex items-center gap-1.5 text-[10px] font-mono font-black uppercase text-blue-600 tracking-widest bg-blue-50 border border-blue-250/20 rounded-full px-2 py-0.5">${currentLoc.back}</span>
+                </div>
               </div>
 
               <!-- Main Dynamic Headline generated/edited -->
-              <h1 class="text-xl md:text-2xl font-black text-white tracking-tight leading-snug mb-3">
+              <h1 class="text-sm md:text-base font-bold text-slate-800 tracking-tight leading-snug mb-3 text-left">
                 ${cookieTitle}
               </h1>
 
               <!-- Main Dynamic Text description generated/edited -->
-              <p class="text-xs md:text-sm text-slate-350 text-slate-400 leading-relaxed mb-6">
+              <p class="text-xs text-slate-500 leading-relaxed mb-6 text-left">
                 ${cookieText}
               </p>
 
-              <!-- Option Checkboxes Checklist representing Cookies customization -->
-              <div class="space-y-3 mb-6 bg-slate-950/50 border border-slate-800/80 rounded-2xl p-4 md:p-5">
+              <!-- Option Checkboxes Checklist representing Cookies customization (initially collapsed, interactive) -->
+              <div id="checkboxes-panel" class="hidden space-y-3.5 mb-6 bg-slate-50 border border-slate-100 rounded-2xl p-4 md:p-5 text-left transition-all duration-300">
                 
                 <!-- Mandatory -->
-                <label class="flex gap-3 text-left cursor-default select-none group">
+                <label class="flex gap-3 text-left cursor-default select-none">
                   <div class="mt-0.5">
-                    <input type="checkbox" checked disabled class="accent-green-500 h-4 w-4 bg-slate-900 border-slate-800 rounded">
+                    <input type="checkbox" checked disabled class="accent-blue-600 h-4.5 w-4.5 bg-white border-slate-300 rounded cursor-default">
                   </div>
                   <div>
-                    <span class="block text-xs font-bold text-white">${currentLoc.req}</span>
-                    <span class="block text-[10px] text-slate-500 mt-0.5 leading-normal">${currentLoc.reqDesc}</span>
+                    <span class="block text-xs font-extrabold text-slate-900">${currentLoc.req}</span>
+                    <span class="block text-[10px] text-slate-550 leading-normal text-slate-500 mt-1">${currentLoc.reqDesc}</span>
                   </div>
                 </label>
 
-                <hr class="border-slate-900">
+                <hr class="border-slate-100">
 
                 <!-- Analytical -->
                 <label class="flex gap-3 text-left cursor-pointer select-none group">
                   <div class="mt-0.5">
-                    <input type="checkbox" id="cookie-anal" checked class="accent-green-500 h-4 w-4 bg-slate-900 border-slate-800 rounded">
+                    <input type="checkbox" id="cookie-anal" checked class="accent-blue-600 h-4.5 w-4.5 bg-white border-slate-300 rounded pointer-events-none">
                   </div>
                   <div>
-                    <span class="block text-xs font-bold text-slate-300 group-hover:text-white transition-all">${currentLoc.anal}</span>
-                    <span class="block text-[10px] text-slate-500 mt-0.5 leading-normal">${currentLoc.analDesc}</span>
+                    <span class="block text-xs font-extrabold text-slate-800 group-hover:text-blue-600 transition-all">${currentLoc.anal}</span>
+                    <span class="block text-[10px] text-slate-550 leading-normal text-slate-500 mt-1">${currentLoc.analDesc}</span>
                   </div>
                 </label>
 
-                <hr class="border-slate-900">
+                <hr class="border-slate-100">
 
                 <!-- Marketing -->
                 <label class="flex gap-3 text-left cursor-pointer select-none group">
                   <div class="mt-0.5">
-                    <input type="checkbox" id="cookie-mark" checked class="accent-green-500 h-4 w-4 bg-slate-900 border-slate-800 rounded">
+                    <input type="checkbox" id="cookie-mark" checked class="accent-blue-600 h-4.5 w-4.5 bg-white border-slate-300 rounded pointer-events-none">
                   </div>
                   <div>
-                    <span class="block text-xs font-bold text-slate-300 group-hover:text-white transition-all">${currentLoc.mark}</span>
-                    <span class="block text-[10px] text-slate-500 mt-0.5 leading-normal">${currentLoc.markDesc}</span>
+                    <span class="block text-xs font-extrabold text-slate-800 group-hover:text-blue-600 transition-all">${currentLoc.mark}</span>
+                    <span class="block text-[10px] text-slate-550 leading-normal text-slate-500 mt-1">${currentLoc.markDesc}</span>
                   </div>
                 </label>
 
               </div>
 
-              <!-- Main Consent Accept buttons -->
-              <div class="flex flex-col gap-3">
-                <button onclick="acceptAndRedirect()" class="w-full py-4 px-6 text-center text-slate-950 bg-green-400 hover:bg-green-300 hover:scale-[1.01] active:scale-95 transition-all duration-150 font-black text-xs md:text-sm rounded-xl tracking-wider uppercase cursor-pointer shadow-lg shadow-green-950/20">
-                  ${cookieCta}
+              <!-- Main Consent Action Buttons layout (3-columns precisely matching user screenshot) -->
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <button type="button" onclick="toggleCustomize()" class="w-full py-3 px-4 text-center border-2 border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 transition-all duration-150 font-bold text-xs rounded-xl cursor-pointer">
+                  ${currentLoc.btnCustomize}
                 </button>
-                <p class="text-[9px] text-slate-500 text-center leading-normal">
-                  ${currentLoc.legal}
-                </p>
+                <button type="button" onclick="acceptAndRedirect()" class="w-full py-3 px-4 text-center border-2 border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 transition-all duration-150 font-bold text-xs rounded-xl cursor-pointer">
+                  ${currentLoc.btnReject}
+                </button>
+                <button type="button" onclick="acceptAndRedirect()" class="w-full py-3 px-6 text-center text-white bg-blue-600 hover:bg-blue-700 transition-all duration-150 font-black text-xs rounded-xl cursor-pointer shadow-md shadow-blue-600/15">
+                  ${currentLoc.btnAccept}
+                </button>
               </div>
 
-              <!-- Footer with legal regulations policies links generate automatically -->
-              <div class="mt-6 pt-4 border-t border-slate-800/50 flex flex-wrap gap-x-4 gap-y-2 justify-center text-[10px] font-medium text-slate-400">
-                <a href="#privacy" onclick="alertPolicy('${currentLoc.priv}')" class="hover:text-white transition-all underline">${currentLoc.priv}</a>
-                <span class="text-slate-700">•</span>
-                <a href="#terms" onclick="alertPolicy('${currentLoc.term}')" class="hover:text-white transition-all underline">${currentLoc.term}</a>
-                <span class="text-slate-700">•</span>
-                <a href="#cookies" onclick="alertPolicy('${currentLoc.cookies}')" class="hover:text-white transition-all underline">${currentLoc.cookies}</a>
+              <div class="mt-4 pt-3.5 border-t border-slate-100 flex flex-wrap gap-x-4 gap-y-2 justify-center text-[10px] font-medium text-slate-400">
+                <a href="#privacy" onclick="alertPolicy('${currentLoc.priv}')" class="hover:text-slate-600 transition-all underline">${currentLoc.priv}</a>
+                <span class="text-slate-200">•</span>
+                <a href="#terms" onclick="alertPolicy('${currentLoc.term}')" class="hover:text-slate-600 transition-all underline">${currentLoc.term}</a>
+                <span class="text-slate-200">•</span>
+                <a href="#cookies" onclick="alertPolicy('${currentLoc.cookies}')" class="hover:text-slate-600 transition-all underline">${currentLoc.cookies}</a>
               </div>
 
             </div>
@@ -1677,6 +2895,13 @@ function compilePageHtml(page: any, db: any): string {
 
           <!-- Standardised policies generator popup script -->
           <script>
+            function toggleCustomize() {
+              const panel = document.getElementById('checkboxes-panel');
+              if (panel) {
+                panel.classList.toggle('hidden');
+              }
+            }
+
             function alertPolicy(policyName) {
               const text = policyName + " - AdsCreator AI\\n\\n${currentLoc.alertText} ${page.productName}.\\n\\n";
               alert(text);
@@ -1756,7 +2981,9 @@ function compilePageHtml(page: any, db: any): string {
       secureBadge: "SEGURO",
       legalNoticeTitle: "Aviso Legal:",
       legalNoticeText: "Este site é de caráter estritamente informativo. Os resultados relatados podem variar de pessoa para pessoa. As referências científicas estão sob posse de seus respectivos detentores de direitos.",
-      copyright: "Todos os direitos reservados."
+      copyright: "Todos os direitos reservados.",
+      galleryTitle: "Ofertas & Apresentação",
+      gallerySubtitle: "Todas as versões e pacotes promocionais de todos os produtos identificados"
     },
     en: {
       specialistOpinion: "EXCLUSIVE SPECIALIST OPINION",
@@ -1771,7 +2998,9 @@ function compilePageHtml(page: any, db: any): string {
       secureBadge: "SECURE",
       legalNoticeTitle: "Disclaimer:",
       legalNoticeText: "This website is for informational purposes only. Reported results may vary from person to person. Scientific references reside under the possession of their respective rights holders.",
-      copyright: "All rights reserved."
+      copyright: "All rights reserved.",
+      galleryTitle: "Offers & Presentation",
+      gallerySubtitle: "All versions and promotional packages of all identified products below"
     },
     es: {
       specialistOpinion: "OPINIÓN EXCLUSIVA DE EXPERTOS",
@@ -1786,7 +3015,9 @@ function compilePageHtml(page: any, db: any): string {
       secureBadge: "SEGURO",
       legalNoticeTitle: "Aviso Legal:",
       legalNoticeText: "Este sitio web es estrictamente informativo. Los resultados reportados pueden variar de persona a persona. Las referencias científicas están bajo la posesión de sus respectivos titulares de derechos.",
-      copyright: "Todos los derechos reservados."
+      copyright: "Todos los derechos reservados.",
+      galleryTitle: "Ofertas y Presentación",
+      gallerySubtitle: "Todas las versiones y paquetes promocionales de todos los productos identificados"
     },
     it: {
       specialistOpinion: "OPINIONE ESCLUSIVA DELLO SPECIALISTA",
@@ -1801,7 +3032,9 @@ function compilePageHtml(page: any, db: any): string {
       secureBadge: "SICURO",
       legalNoticeTitle: "Note Legali:",
       legalNoticeText: "Questo sito è a scopo esclusivamente informativo. I risultati riportati possono variare da persona a persona. I riferimenti scientifici appartengono ai rispettivi detentori dei diritti.",
-      copyright: "Tutti i diritti riservati."
+      copyright: "Tutti i diritti riservati.",
+      galleryTitle: "Offerte & Presentazione",
+      gallerySubtitle: "Tutte le versioni e pacchetti promozionali di tutti i prodotti identificati"
     },
     fr: {
       specialistOpinion: "OPINION EXCLUSIVE DE L'SPÉCIALISTE",
@@ -1816,7 +3049,9 @@ function compilePageHtml(page: any, db: any): string {
       secureBadge: "SÉCURISÉ",
       legalNoticeTitle: "Mentions Légales :",
       legalNoticeText: "Ce site est mis à disposition à titre strictement informatif. Les résultats rapportés peuvent varier d'une personne à l'autre. Les références scientifiques appartiennent à leurs détenteurs de droits respectifs.",
-      copyright: "Tous droits réservés."
+      copyright: "Tous droits réservés.",
+      galleryTitle: "Offres & Présentation",
+      gallerySubtitle: "Toutes les versions et packs promotionnels de tous les produits identifiés"
     }
   };
 
@@ -1887,6 +3122,38 @@ function compilePageHtml(page: any, db: any): string {
       case "video":
         return `<!-- Video component skipped under global media rules -->`;
       case "image":
+        if (comp.content.images && Array.isArray(comp.content.images) && comp.content.images.length > 0) {
+          const limitedImages = comp.content.images.slice(0, 6);
+          const gridItemsHtml = limitedImages.map((img: string) => `
+            <div class="bg-slate-900/80 border border-slate-800/80 hover:border-blue-500/50 p-6 rounded-2xl shadow-xl flex flex-col items-center justify-center transition-all hover:scale-[1.03] group relative overflow-hidden">
+              <div class="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+              <img src="${img}" alt="${comp.content.alt || page.productName}" class="max-h-[220px] object-contain rounded-xl drop-shadow-xl transition-transform group-hover:scale-105" />
+            </div>
+          `).join('');
+
+          let displayTitle = comp.content.title || `${page.productName} - ${currentLoc.galleryTitle}`;
+          if (language !== "pt" && (displayTitle.includes("Ofertas & Apresentação") || displayTitle.includes("Opções Disponíveis"))) {
+            displayTitle = `${page.productName} - ${currentLoc.galleryTitle}`;
+          }
+
+          let displaySubtitle = currentLoc.gallerySubtitle || "Todas as versões e pacotes promocionais de todos os produtos identificados";
+
+          return `
+            <section class="py-16 bg-slate-950 border-b border-slate-900 px-4">
+              <div class="max-w-5xl mx-auto">
+                <div class="text-center mb-10">
+                  <h3 class="text-2xl md:text-3xl font-extrabold text-white tracking-tight leading-tight">${displayTitle}</h3>
+                  <p class="text-slate-400 text-sm mt-3">${displaySubtitle}</p>
+                </div>
+                <a href="${affLink}" onclick="registerClick()" target="_blank" class="block cursor-pointer">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                    ${gridItemsHtml}
+                  </div>
+                </a>
+              </div>
+            </section>
+          `;
+        }
         return `
           <section class="py-12 bg-slate-950 text-center border-b border-slate-900 px-4">
             <div class="max-w-3xl mx-auto">
@@ -2110,6 +3377,11 @@ function compilePageHtml(page: any, db: any): string {
             <p class="font-mono">Copyright &copy; 2026 AdsCreator AI. ${currentLoc.copyright}</p>
           </div>
         </footer>
+
+        <!-- BACKUP DATA FOR REIMPORTING -->
+        <script id="adscreator-backup-data" type="application/json">
+          ${JSON.stringify(page).replace(/</g, '\\u003c')}
+        </script>
 
         ${trackingScript}
       </body>

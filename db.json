@@ -1,0 +1,198 @@
+{
+  "profile": {
+    "name": "Afiliado Autoridade",
+    "email": "ribeiromoreira91@gmail.com",
+    "planId": "pro",
+    "pagesCreatedCount": 0,
+    "subdomain": "ribeiros-ads.adscreator.ai",
+    "customDomain": "https://supabase.com/dashboard/project/knbjqbavyfmecvyvnqmh/database/schemas"
+  },
+  "pages": [
+    {
+      "id": "demo-1",
+      "title": "Joint Eternal Análise Sincera 2026",
+      "slug": "joint-eternal-review-oficial",
+      "type": "Review",
+      "status": "Publicada",
+      "originalUrl": "https://joiniteternal.com",
+      "productName": "Joint Eternal",
+      "createdAt": "2026-06-09T14:18:28.439Z",
+      "views": 0,
+      "clicks": 0,
+      "ctr": 0,
+      "components": [
+        {
+          "id": "comp-1",
+          "type": "headline",
+          "content": {
+            "title": "Joint Eternal Funciona Mesmo? Não Compre Antes de Ler Isto!",
+            "text": "Uma análise profunda e baseada em evidências científicas sobre a fórmula de alívio articular que está dominando o mercado em 2026."
+          }
+        },
+        {
+          "id": "comp-2",
+          "type": "timer",
+          "content": {
+            "title": "ALERTA: Desconto Promocional Expira Em Breve",
+            "durationMinutes": 15
+          }
+        },
+        {
+          "id": "comp-3",
+          "type": "text",
+          "content": {
+            "text": "Se você sofre com dores constantes nos joelhos, costas ou articulações, sabe o quanto isso limita sua liberdade. O **Joint Eternal** foi formulado justamente com compostos naturais premium para agir diretamente na inflamação das juntas. Mas será que cumpre o prometido? Após testarmos durante 30 dias, compilamos as respostas essenciais."
+          }
+        },
+        {
+          "id": "comp-4",
+          "type": "compare",
+          "content": {
+            "title": "Joint Eternal vs Suplementos Comuns",
+            "compareFields": [
+              {
+                "feature": "Ingredientes Naturais Premium",
+                "productA": "Joint Eternal",
+                "productB": "Outros do mercado",
+                "valueA": true,
+                "valueB": true
+              },
+              {
+                "feature": "Fórmula de Absorção Líquida Rápida",
+                "productA": "Joint Eternal",
+                "productB": "Outros do mercado",
+                "valueA": true,
+                "valueB": false
+              },
+              {
+                "feature": "Sem Efeitos Colaterais",
+                "productA": "Joint Eternal",
+                "productB": "Outros do mercado",
+                "valueA": true,
+                "valueB": false
+              },
+              {
+                "feature": "Garantia Incondicional de 60 Dias",
+                "productA": "Joint Eternal",
+                "productB": "Outros do mercado",
+                "valueA": true,
+                "valueB": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "comp-5",
+          "type": "faq",
+          "content": {
+            "title": "Dúvidas Frequentes",
+            "faqList": [
+              {
+                "question": "Como devo utilizar o Joint Eternal?",
+                "answer": "Recomenda-se tomar a dosagem indicada diariamente conforme o rótulo do fabricante, idealmente pela manhã."
+              },
+              {
+                "question": "Em quanto tempo vejo resultados?",
+                "answer": "Muitos usuários relatam alívio perceptível nas primeiras 2 a 3 semanas de uso consistente."
+              }
+            ]
+          }
+        },
+        {
+          "id": "comp-6",
+          "type": "guarantee",
+          "content": {
+            "title": "Garantia Blindada de Satisfação",
+            "text": "O fabricante oferece uma garantia incondicional de 60 dias. Se por algum motivo você não se sentir totalmente satisfeito com o alívio das dores, basta solicitar reembolso integral."
+          }
+        },
+        {
+          "id": "comp-7",
+          "type": "button",
+          "content": {
+            "buttonText": "QUERO EXPERIMENTAR JOINT ETERNAL COM DESCONTO",
+            "buttonUrl": "https://joiniteternal.com?afiliado=adscreator"
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-2",
+      "title": "Meticore Advertorial Especial G1",
+      "slug": "meticore-metodo-revelado",
+      "type": "Advertorial",
+      "status": "Publicada",
+      "originalUrl": "https://meticore.com",
+      "productName": "Meticore",
+      "createdAt": "2026-06-11T14:18:28.440Z",
+      "views": 0,
+      "clicks": 0,
+      "ctr": 0,
+      "components": [
+        {
+          "id": "comp-ad-1",
+          "type": "headline",
+          "content": {
+            "title": "Descoberta Científica Revela Causa Oculta da Dificuldade em Emagrecer",
+            "text": "Pesquisadores identificam que a baixa temperatura corporal interna é o principal fator de metabolismo lento."
+          }
+        },
+        {
+          "id": "comp-ad-2",
+          "type": "text",
+          "content": {
+            "text": "Durante décadas, fomos informados de que o excesso de peso se resume apenas à quantidade de calorias ingeridas em relação às gastas. No entanto, cientistas renomados constataram que indivíduos com dificuldades persistentes de emagrecimento possuem uma temperatura celular interna ligeiramente menor, o que reduz drasticamente a velocidade metabólica natural."
+          }
+        },
+        {
+          "id": "comp-ad-3",
+          "type": "testimonials",
+          "content": {
+            "title": "Depoimentos Reais de Leitores",
+            "testimonialsList": [
+              {
+                "name": "Maria do Carmo",
+                "text": "Minha disposição aumentou incrivelmente nas primeiras duas semanas. O cansaço sumiu!",
+                "role": "Curitiba, PR"
+              },
+              {
+                "name": "Carlos Eduardo",
+                "text": "Perdi medidas na cintura que pareciam impossíveis. Recomendo fortemente.",
+                "role": "São Paulo, SP"
+              }
+            ]
+          }
+        },
+        {
+          "id": "comp-ad-4",
+          "type": "button",
+          "content": {
+            "buttonText": "VISITAR SITE OFICIAL DE METICORE",
+            "buttonUrl": "https://meticore.com?afiliado=adscreator"
+          }
+        }
+      ]
+    }
+  ],
+  "analytics": [],
+  "logs": [
+    {
+      "id": "log_wrzn2tuk6",
+      "timestamp": "2026-06-12T14:40:06.222Z",
+      "action": "Mudança de Domínio",
+      "details": "Sua URL de publicação foi redefinida. Subdomínio: ribeiros-ads.adscreator.ai | Domínio Próprio: https://supabase.com/dashboard/project/knbjqbavyfmecvyvnqmh/database/schemas"
+    },
+    {
+      "id": "log_2t98ze8jp",
+      "timestamp": "2026-06-12T14:39:34.732Z",
+      "action": "Alteração de Plano",
+      "details": "Seu plano do AdsCreator AI foi alterado para: PRO"
+    }
+  ],
+  "integrations": {
+    "metaPixelId": "",
+    "googleAnalyticsId": "",
+    "googleTagManagerId": "",
+    "tiktokPixelId": ""
+  }
+}

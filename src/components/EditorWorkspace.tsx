@@ -328,8 +328,24 @@ export default function EditorWorkspace({ page, onBack, onSave }: Props) {
 
                     {comp.type === 'image' && (
                       <div className="text-center py-2">
-                        <img src={comp.content.src || "/api/fallback-image"} alt={comp.content.alt} className="max-h-36 mx-auto rounded border border-slate-800" />
-                        <span className="block mt-1 text-[9px] font-mono text-slate-500">{comp.content.alt}</span>
+                        {comp.content.images && Array.isArray(comp.content.images) && comp.content.images.length > 0 ? (
+                          <div className="space-y-1.5">
+                            <span className="block text-[9px] font-bold text-blue-400 bg-blue-950 px-2 py-0.5 rounded tracking-wider uppercase mb-1.5">{comp.content.title || "Galeria de Imagens"}</span>
+                            <div className="grid grid-cols-3 gap-1 px-1">
+                              {comp.content.images.slice(0, 3).map((imgUrl: string, idx: number) => (
+                                <img key={idx} src={imgUrl} className="max-h-12 w-full object-contain bg-slate-900 border border-slate-800 rounded p-0.5" alt="Scrap" referrerPolicy="no-referrer" />
+                              ))}
+                            </div>
+                            {comp.content.images.length > 3 && (
+                              <span className="block text-[8px] font-mono font-bold text-slate-500">Mais {comp.content.images.length - 3} variações de produtos</span>
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            <img src={comp.content.src || "/api/fallback-image"} alt={comp.content.alt} className="max-h-36 mx-auto rounded border border-slate-800" referrerPolicy="no-referrer" />
+                            <span className="block mt-1 text-[9px] font-mono text-slate-500">{comp.content.alt}</span>
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -505,7 +521,16 @@ export default function EditorWorkspace({ page, onBack, onSave }: Props) {
             {selectedComp.type === 'image' && (
               <div className="space-y-3">
                 <div>
-                  <label className="block text-[10px] font-bold font-mono text-slate-400 uppercase mb-1">URL de Origem Completa</label>
+                  <label className="block text-[10px] font-bold font-mono text-slate-400 uppercase mb-1">Título da Galeria (se aplicável)</label>
+                  <input
+                    type="text"
+                    value={selectedComp.content.title || ''}
+                    onChange={(e) => handleUpdateContent('title', e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 rounded p-2 text-xs text-white focus:outline-none focus:border-green-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold font-mono text-slate-400 uppercase mb-1">URL de Origem Principal (Única)</label>
                   <input
                     type="text"
                     value={selectedComp.content.src || ''}
@@ -521,6 +546,22 @@ export default function EditorWorkspace({ page, onBack, onSave }: Props) {
                     onChange={(e) => handleUpdateContent('alt', e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded p-2 text-xs text-white focus:outline-none focus:border-green-500"
                   />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold font-mono text-slate-400 uppercase mb-1">Grid de Imagens (URLs separadas por vírgula)</label>
+                  <textarea
+                    rows={4}
+                    value={Array.isArray(selectedComp.content.images) ? selectedComp.content.images.join(",\n") : (selectedComp.content.images || '')}
+                    onChange={(e) => {
+                      const list = e.target.value.split(",").map(url => url.trim()).filter(Boolean);
+                      handleUpdateContent('images', list.length > 0 ? list : undefined);
+                    }}
+                    placeholder="Cole as URLs das imagens dos produtos separadas por vírgulas..."
+                    className="w-full bg-slate-900 border border-slate-800 rounded p-2 text-xs text-slate-300 focus:outline-none focus:border-green-500 font-mono leading-normal"
+                  />
+                  <span className="text-[9px] text-slate-500 block leading-tight mt-1">
+                    Se preenchido, renderizará todas as opções listadas em um grid elegante ao invés de apenas uma única imagem.
+                  </span>
                 </div>
               </div>
             )}
