@@ -3698,4 +3698,8 @@ async function initializeViteAndStaticServing() {
   });
 }
 
-initializeViteAndStaticServing();
+if (!process.env.VERCEL) {
+  initializeViteAndStaticServing();
+}
+
+export default app;
