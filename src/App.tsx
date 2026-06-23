@@ -7,6 +7,7 @@ import EditorWorkspace from './components/EditorWorkspace';
 import ActivityLogPanel from './components/ActivityLogPanel';
 import UserProfileDropdown from './components/UserProfileDropdown';
 import LoginScreen from './components/LoginScreen';
+import SupabaseConnectionBanner from './components/SupabaseConnectionBanner';
 import { checkConnection } from './lib/supabase';
 import {
   Globe,
@@ -195,12 +196,60 @@ export default function App() {
 
   const verifySupabase = async () => {
     try {
-      const res = await checkConnection();
+      // 1. Tentar fazer o check de conexão local/cliente
+      const clientRes = await checkConnection();
+      
+      // se deu certo pelo lado do cliente (VITE_ chaves configuradas), ótimo!
+      if (clientRes.success) {
+        setSupabaseStatus({
+          isChecked: true,
+          success: clientRes.success,
+          message: clientRes.message,
+          code: clientRes.code
+        });
+        return;
+      }
+      
+      // 2. Se falhar ou não tiver variáveis no cliente (o que é normal se as variáveis foram injetadas apenas no backend),
+      // fazemos uma chamada para a nossa API do servidor para conferir se o servidor se comunicou!
+      const serverRes = await fetch('/api/auth/status');
+      if (serverRes.ok) {
+        const data = await serverRes.json();
+        if (data.supabaseConfigured) {
+          if (data.supabaseStatus === "online") {
+            setSupabaseStatus({
+              isChecked: true,
+              success: true,
+              message: data.supabaseMessage || "Banco de dados remoto do Supabase conectado com sucesso pelo servidor.",
+              code: "SUCCESS"
+            });
+            return;
+          } else if (data.supabaseStatus === "tables_missing") {
+            setSupabaseStatus({
+              isChecked: true,
+              success: true,
+              message: data.supabaseMessage || "O servidor conectou ao Supabase, mas a tabela está ausente.",
+              code: "TABLE_MISSING"
+            });
+            return;
+          } else {
+            setSupabaseStatus({
+              isChecked: true,
+              success: false,
+              message: data.supabaseMessage || "O Supabase está configurado no servidor mas parece indisponível.",
+              code: "SERVER_OFFLINE"
+            });
+            return;
+          }
+        }
+      }
+      
+      // Se nem a api do servidor passou de forma bem sucedida, exibimos o erro original do cliente
       setSupabaseStatus({
         isChecked: true,
-        success: res.success,
-        message: res.message,
-        code: res.code
+        success: clientRes.success,
+        message: clientRes.message,
+        code: clientRes.code
       });
     } catch (err: any) {
       setSupabaseStatus({
@@ -751,6 +800,9 @@ export default function App() {
         
         {activeTab === 'pages' && (
           <div className="space-y-10">
+            
+            {/* BANNER DE STATUS DO SUPABASE */}
+            <SupabaseConnectionBanner status={supabaseStatus} onReverify={verifySupabase} />
             
             {/* ANALYTICS SUMMARY PANEL */}
             <AnalyticsSummary pages={pages} />

@@ -44,8 +44,11 @@ const isPlaceholder = (val: string) => {
 };
 
 const SUPABASE_URL = isPlaceholder(rawSupabaseUrl) ? "" : rawSupabaseUrl;
-const SUPABASE_ANON_KEY = isPlaceholder((process.env.SUPABASE_ANON_KEY || "").trim()) ? "" : (process.env.SUPABASE_ANON_KEY || "").trim();
-const SUPABASE_SERVICE_ROLE_KEY = isPlaceholder((process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim()) ? "" : (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+const rawAnonKey = (process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || "").trim();
+const SUPABASE_ANON_KEY = isPlaceholder(rawAnonKey) ? "" : rawAnonKey;
+
+const rawServiceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "").trim();
+const SUPABASE_SERVICE_ROLE_KEY = isPlaceholder(rawServiceRoleKey) ? "" : rawServiceRoleKey;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.warn("⚠️ ATENÇÃO: As credenciais do Supabase não foram configuradas no arquivo .env ou são placeholders.");
@@ -1468,6 +1471,18 @@ app.get("/api/auth/status", async (req, res) => {
         supabaseMessage: "Banco do Supabase conectado com sucesso em tempo real."
       });
     } catch (testErr: any) {
+      const errMsg = (testErr?.message || "").toLowerCase();
+      const errCode = String(testErr?.code || "");
+      const isTableMissing = errMsg.includes("relation") && errMsg.includes("does not exist") || errCode === "PGRST205" || errCode === "42P01";
+
+      if (isTableMissing) {
+        return res.json({
+          supabaseConfigured: true,
+          supabaseStatus: "tables_missing",
+          supabaseMessage: "O servidor conectou ao Supabase com sucesso, mas a tabela 'profiles' ou 'pages' ainda não foi criada no banco de dados."
+        });
+      }
+
       return res.json({
         supabaseConfigured: true,
         supabaseStatus: "offline",
