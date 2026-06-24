@@ -3309,7 +3309,7 @@ function compilePageHtml(page: any, db: any): string {
           </div>
         ` : '';
         return `
-          <header class="py-16 text-center border-b border-gray-800 bg-gradient-to-b from-slate-900 to-slate-950 px-4">
+          <header class="py-16 text-center border-b border-gray-800 bg-linear-to-b from-slate-900 to-slate-950 px-4">
             <div class="max-w-3xl mx-auto">
               ${logoHtml}
               <span class="inline-block px-4 py-1 text-xs font-semibold tracking-wider text-green-400 uppercase bg-green-950/40 border border-green-800 rounded-full mb-6 font-mono">${currentLoc.specialistOpinion}</span>
@@ -3369,8 +3369,8 @@ function compilePageHtml(page: any, db: any): string {
           const limitedImages = comp.content.images.slice(0, 6);
           const gridItemsHtml = limitedImages.map((img: string) => `
             <div class="bg-slate-900/80 border border-slate-800/80 hover:border-blue-500/50 p-6 rounded-2xl shadow-xl flex flex-col items-center justify-center transition-all hover:scale-[1.03] group relative overflow-hidden">
-              <div class="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-              <img src="${img}" alt="${comp.content.alt || page.productName}" class="max-h-[220px] object-contain rounded-xl drop-shadow-xl transition-transform group-hover:scale-105" />
+              <div class="absolute inset-0 bg-linear-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+              <img src="${img}" alt="${comp.content.alt || page.productName}" class="max-h-55 object-contain rounded-xl drop-shadow-xl transition-transform group-hover:scale-105" />
             </div>
           `).join('');
 
@@ -3717,7 +3717,7 @@ app.get("/:slug", (req, res, next) => {
 // VITE AND STATIC ASSETS HANDLING MIDDLEWARE
 // ----------------------------------------------------
 async function initializeViteAndStaticServing() {
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
     console.log("Iniciando Vite em modo de desenvolvimento...");
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -3733,13 +3733,19 @@ async function initializeViteAndStaticServing() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[AdsCreator AI Server] Servidor ativo em http://localhost:${PORT}`);
-  });
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`[AdsCreator AI Server] Servidor ativo em http://localhost:${PORT}`);
+    });
+  }
 }
 
-if (!process.env.VERCEL) {
-  initializeViteAndStaticServing();
+initializeViteAndStaticServing().catch(err => {
+  console.error("Falha ao inicializar o servidor/vite:", err);
+});
+
+if (process.env.VERCEL) {
+  console.log("[Vercel] Exportando como função serverless...");
 }
 
 export default app;
