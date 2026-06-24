@@ -1,12 +1,16 @@
-import {StrictMode} from 'react';
-import {createRoot} from 'react-dom/client';
-import { Analytics } from '@vercel/analytics/react';
-import App from './App.tsx';
-import './index.css';
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.tsx'
+import './index.css'
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
+// 1. Importe a função de inicialização dos Insights da Vercel
+import { injectSpeedInsights } from '@vercel/speed-insights';
+
+// 2. Execute a função para ativar o monitoramento no carregamento do site
+injectSpeedInsights();
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
     <App />
-    <Analytics />
-  </StrictMode>,
-);
+  </React.StrictMode>,
+)
