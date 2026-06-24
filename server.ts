@@ -1856,7 +1856,7 @@ app.get("/api/pages", async (req, res) => {
     const db = readDB();
     const localPages = db.pages || [];
 
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !supabase) {
       return res.json(localPages);
     }
 
