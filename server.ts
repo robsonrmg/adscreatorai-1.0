@@ -25,8 +25,22 @@ const PORT = 3000;
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
+function getEnvValue(...keys: string[]) {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function sendApiError(res: any, status: number, message: string) {
+  return res.status(status).json({ error: message });
+}
+
 // 2. Inicializar o cliente do Supabase usando variáveis de ambiente
-let rawSupabaseUrl = (process.env.SUPABASE_URL || "").trim();
+let rawSupabaseUrl = getEnvValue("SUPABASE_URL", "VITE_SUPABASE_URL").trim();
 // Limpar a URL caso termine com o sufixo da API RESTful /rest/v1 ou /v1, comumente colado por engano
 rawSupabaseUrl = rawSupabaseUrl.replace(/\/rest\/v1\/?$/, "");
 rawSupabaseUrl = rawSupabaseUrl.replace(/\/v1\/?$/, "");
@@ -44,10 +58,10 @@ const isPlaceholder = (val: string) => {
 };
 
 const SUPABASE_URL = isPlaceholder(rawSupabaseUrl) ? "" : rawSupabaseUrl;
-const rawAnonKey = (process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || "").trim();
+const rawAnonKey = getEnvValue("SUPABASE_ANON_KEY", "SUPABASE_PUBLISHABLE_KEY", "VITE_SUPABASE_ANON_KEY").trim();
 const SUPABASE_ANON_KEY = isPlaceholder(rawAnonKey) ? "" : rawAnonKey;
 
-const rawServiceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "").trim();
+const rawServiceRoleKey = getEnvValue("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY").trim();
 const SUPABASE_SERVICE_ROLE_KEY = isPlaceholder(rawServiceRoleKey) ? "" : rawServiceRoleKey;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -1679,40 +1693,45 @@ app.get("/api/profile", async (req, res) => {
 
 // Update Profile Custom Domain / Subdomain
 app.post("/api/profile/domain", async (req, res) => {
-  const { subdomain, customDomain } = req.body;
-  const db = readDB();
-  db.profile = db.profile || {};
-  if (subdomain !== undefined) db.profile.subdomain = subdomain;
-  if (customDomain !== undefined) db.profile.customDomain = customDomain;
-  writeDB(db);
-  
-  addLog("Mudança de Domínio", `Sua URL de publicação foi redefinida. Subdomínio: ${subdomain || "-"} | Domínio Próprio: ${customDomain || "-"}`);
+  try {
+    const { subdomain, customDomain } = req.body;
+    const db = readDB();
+    db.profile = db.profile || {};
+    if (subdomain !== undefined) db.profile.subdomain = subdomain;
+    if (customDomain !== undefined) db.profile.customDomain = customDomain;
+    writeDB(db);
+    
+    addLog("Mudança de Domínio", `Sua URL de publicação foi redefinida. Subdomínio: ${subdomain || "-"} | Domínio Próprio: ${customDomain || "-"}`);
 
-  if (supabase) {
-    try {
-      const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
-      const payload: any = {
-        subdomain: subdomain || db.profile.subdomain,
-        custom_domain: customDomain || db.profile.customDomain
-      };
+    if (supabase) {
+      try {
+        const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
+        const payload: any = {
+          subdomain: subdomain || db.profile.subdomain,
+          custom_domain: customDomain || db.profile.customDomain
+        };
 
-      if (firstProfile?.id) {
-        await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
-      } else {
-        await supabase.from("profiles").insert({
-          name: db.profile.name || "Afiliado Autoridade",
-          email: db.profile.email || "seu-email@gmail.com",
-          plan_id: db.profile.planId || "starter",
-          pages_created_count: db.profile.pagesCreatedCount || 0,
-          ...payload
-        });
+        if (firstProfile?.id) {
+          await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
+        } else {
+          await supabase.from("profiles").insert({
+            name: db.profile.name || "Afiliado Autoridade",
+            email: db.profile.email || "seu-email@gmail.com",
+            plan_id: db.profile.planId || "starter",
+            pages_created_count: db.profile.pagesCreatedCount || 0,
+            ...payload
+          });
+        }
+      } catch (err: any) {
+        logSupabaseSync("Sincronizar alteração de domínio", err);
       }
-    } catch (err: any) {
-      logSupabaseSync("Sincronizar alteração de domínio", err);
     }
-  }
 
-  res.json(db.profile);
+    return res.json(db.profile);
+  } catch (err: any) {
+    console.error("Erro ao salvar domínio do perfil:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao atualizar o domínio do perfil.");
+  }
 });
 
 // Verify custom domain DNS configuration (CNAME target)
@@ -1777,77 +1796,87 @@ app.post("/api/domains/verify", async (req, res) => {
 
 // Update Plan Limit
 app.post("/api/profile/plan", async (req, res) => {
-  const { planId } = req.body;
-  const db = readDB();
-  db.profile = db.profile || {};
-  db.profile.planId = planId;
-  writeDB(db);
-  
-  addLog("Alteração de Plano", `Seu plano do AdsCreator AI foi alterado para: ${planId.toUpperCase()}`);
+  try {
+    const { planId } = req.body;
+    const db = readDB();
+    db.profile = db.profile || {};
+    db.profile.planId = planId;
+    writeDB(db);
+    
+    addLog("Alteração de Plano", `Seu plano do AdsCreator AI foi alterado para: ${planId.toUpperCase()}`);
 
-  if (supabase) {
-    try {
-      const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
-      const payload: any = {
-        plan_id: planId
-      };
+    if (supabase) {
+      try {
+        const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
+        const payload: any = {
+          plan_id: planId
+        };
 
-      if (firstProfile?.id) {
-        await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
-      } else {
-        await supabase.from("profiles").insert({
-          name: db.profile.name || "Afiliado Autoridade",
-          email: db.profile.email || "seu-email@gmail.com",
-          plan_id: planId,
-          pages_created_count: db.profile.pagesCreatedCount || 0,
-          subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai"
-        });
+        if (firstProfile?.id) {
+          await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
+        } else {
+          await supabase.from("profiles").insert({
+            name: db.profile.name || "Afiliado Autoridade",
+            email: db.profile.email || "seu-email@gmail.com",
+            plan_id: planId,
+            pages_created_count: db.profile.pagesCreatedCount || 0,
+            subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai"
+          });
+        }
+      } catch (err: any) {
+        logSupabaseSync("Sincronizar alteração de plano", err);
       }
-    } catch (err: any) {
-      logSupabaseSync("Sincronizar alteração de plano", err);
     }
-  }
 
-  res.json(db.profile);
+    return res.json(db.profile);
+  } catch (err: any) {
+    console.error("Erro ao atualizar plano do perfil:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao atualizar o plano do perfil.");
+  }
 });
 
 // Update Profile Details (Name, Email, Avatar URL)
 app.post("/api/profile/update", async (req, res) => {
-  const { name, email, avatarUrl } = req.body;
-  const db = readDB();
-  db.profile = db.profile || {};
-  if (name !== undefined) db.profile.name = name;
-  if (email !== undefined) db.profile.email = email;
-  if (avatarUrl !== undefined) db.profile.avatarUrl = avatarUrl;
-  writeDB(db);
-  
-  addLog("Atualização de Perfil", `Seus dados de acesso foram atualizados. Nome: ${name || db.profile.name}`);
+  try {
+    const { name, email, avatarUrl } = req.body;
+    const db = readDB();
+    db.profile = db.profile || {};
+    if (name !== undefined) db.profile.name = name;
+    if (email !== undefined) db.profile.email = email;
+    if (avatarUrl !== undefined) db.profile.avatarUrl = avatarUrl;
+    writeDB(db);
+    
+    addLog("Atualização de Perfil", `Seus dados de acesso foram atualizados. Nome: ${name || db.profile.name}`);
 
-  if (supabase) {
-    try {
-      const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
-      const payload: any = {};
-      if (name !== undefined) payload.name = name;
-      if (email !== undefined) payload.email = email;
+    if (supabase) {
+      try {
+        const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
+        const payload: any = {};
+        if (name !== undefined) payload.name = name;
+        if (email !== undefined) payload.email = email;
 
-      if (firstProfile?.id) {
-        await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
-      } else {
-        await supabase.from("profiles").insert({
-          name: name || "Afiliado Autoridade",
-          email: email || "seu-email@gmail.com",
-          plan_id: db.profile.planId || "starter",
-          pages_created_count: db.profile.pagesCreatedCount || 0,
-          subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai",
-          ...payload
-        });
+        if (firstProfile?.id) {
+          await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
+        } else {
+          await supabase.from("profiles").insert({
+            name: name || "Afiliado Autoridade",
+            email: email || "seu-email@gmail.com",
+            plan_id: db.profile.planId || "starter",
+            pages_created_count: db.profile.pagesCreatedCount || 0,
+            subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai",
+            ...payload
+          });
+        }
+      } catch (err: any) {
+        logSupabaseSync("Sincronizar atualização de perfil", err);
       }
-    } catch (err: any) {
-      logSupabaseSync("Sincronizar atualização de perfil", err);
     }
-  }
 
-  res.json(db.profile);
+    return res.json(db.profile);
+  } catch (err: any) {
+    console.error("Erro ao atualizar perfil:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao atualizar o perfil.");
+  }
 });
 
 // Fetch All Generated Pages (Dashboard list)
@@ -2004,115 +2033,122 @@ app.post("/api/pages", async (req, res) => {
 
 // Update page details (The Drag-and-Drop Save UI endpoint)
 app.put("/api/pages/:id", (req, res) => {
-  const { id } = req.params;
-  const updatedFields = req.body;
-  const db = readDB();
-  
-  const pIndex = db.pages.findIndex((x: any) => x.id === id);
-  if (pIndex !== -1) {
-    db.pages[pIndex] = {
-      ...db.pages[pIndex],
-      ...updatedFields,
-      // Recalculate CTR dynamically
-      ctr: db.pages[pIndex].views > 0 ? parseFloat(((db.pages[pIndex].clicks / db.pages[pIndex].views) * 100).toFixed(2)) : 0
-    };
-    writeDB(db);
-    addLog("Edição de Página", `A página "${db.pages[pIndex].title}" foi atualizada pelo editor visual.`);
+  try {
+    const { id } = req.params;
+    const updatedFields = req.body;
+    const db = readDB();
+    
+    const pIndex = db.pages.findIndex((x: any) => x.id === id);
+    if (pIndex !== -1) {
+      db.pages[pIndex] = {
+        ...db.pages[pIndex],
+        ...updatedFields,
+        ctr: db.pages[pIndex].views > 0 ? parseFloat(((db.pages[pIndex].clicks / db.pages[pIndex].views) * 100).toFixed(2)) : 0
+      };
+      writeDB(db);
+      addLog("Edição de Página", `A página "${db.pages[pIndex].title}" foi atualizada pelo editor visual.`);
 
-    if (supabase) {
-      try {
-        const updatedPage = db.pages[pIndex];
-        const htmlContent = compilePageHtml(updatedPage, db);
-        supabase.from("pages").update({
-          title: updatedPage.title,
-          type: updatedPage.type,
-          html_content: htmlContent
-        }).eq("id", id).then(({ error }) => {
-          if (error) {
-            logSupabaseSync("Sincronizar edição de página", error);
-          } else {
-            console.log(`[Supabase Pages] Edição sincronizada com sucesso para id: ${id}`);
-          }
-        });
-      } catch (sbErr: any) {
-        logSupabaseSync("Sincronizar edição de página (exceção)", sbErr);
+      if (supabase) {
+        try {
+          const updatedPage = db.pages[pIndex];
+          const htmlContent = compilePageHtml(updatedPage, db);
+          supabase.from("pages").update({
+            title: updatedPage.title,
+            type: updatedPage.type,
+            html_content: htmlContent
+          }).eq("id", id).then(({ error }) => {
+            if (error) {
+              logSupabaseSync("Sincronizar edição de página", error);
+            } else {
+              console.log(`[Supabase Pages] Edição sincronizada com sucesso para id: ${id}`);
+            }
+          });
+        } catch (sbErr: any) {
+          logSupabaseSync("Sincronizar edição de página (exceção)", sbErr);
+        }
       }
-    }
 
-    res.json(db.pages[pIndex]);
-  } else {
-    res.status(404).json({ error: "Página não encontrada." });
+      return res.json(db.pages[pIndex]);
+    } else {
+      return sendApiError(res, 404, "Página não encontrada.");
+    }
+  } catch (err: any) {
+    console.error("Erro ao atualizar página:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao atualizar a página.");
   }
 });
 
 // Duplicate Page
 app.post("/api/pages/:id/duplicate", (req, res) => {
-  const { id } = req.params;
-  const db = readDB();
-  const page = db.pages.find((x: any) => x.id === id);
-  if (page) {
-    // Check Plan Limits
-    const limit = db.profile.planId === "starter" ? 10 : db.profile.planId === "pro" ? 50 : 999999;
-    const currentCount = db.pages.length;
-    if (currentCount >= limit) {
-      return res.status(422).json({ error: `Prezado usuário, você atingiu o limite de ${limit} páginas para o plano ${db.profile.planId.toUpperCase()}. Por favor, faça um upgrade.` });
-    }
-
-    const newSlug = `${page.slug}-copy-${Math.floor(Math.random() * 1000)}`;
-    const duplicate = {
-      ...page,
-      id: "p_" + Math.random().toString(36).substr(2, 9),
-      title: `${page.title} (Cópia)`,
-      slug: newSlug,
-      createdAt: new Date().toISOString(),
-      views: 0,
-      clicks: 0,
-      ctr: 0
-    };
-    db.pages.push(duplicate);
-    writeDB(db);
-    addLog("Duplicação de Página", `Cópia criada com sucesso da página: ${page.title}`);
-
-    if (supabase) {
-      try {
-        const htmlContent = compilePageHtml(duplicate, db);
-        const sbPage = {
-          id: duplicate.id,
-          title: duplicate.title,
-          slug: duplicate.slug,
-          type: duplicate.type,
-          status: duplicate.status || 'Publicada',
-          original_url: duplicate.originalUrl || null,
-          product_name: duplicate.productName || "Produto",
-          html_content: htmlContent,
-          created_at: duplicate.createdAt
-        };
-        supabase.from("pages").insert([sbPage]).then(({ error }) => {
-          if (error) {
-            logSupabaseSync("Duplicação de página", error);
-          } else {
-            console.log(`[Supabase Pages] Duplicação sincronizada no Supabase: ${duplicate.slug}`);
-          }
-        });
-      } catch (sbErr: any) {
-        logSupabaseSync("Duplicação de página (exceção)", sbErr);
+  try {
+    const { id } = req.params;
+    const db = readDB();
+    const page = db.pages.find((x: any) => x.id === id);
+    if (page) {
+      const limit = db.profile.planId === "starter" ? 10 : db.profile.planId === "pro" ? 50 : 999999;
+      const currentCount = db.pages.length;
+      if (currentCount >= limit) {
+        return sendApiError(res, 422, `Prezado usuário, você atingiu o limite de ${limit} páginas para o plano ${db.profile.planId.toUpperCase()}. Por favor, faça um upgrade.`);
       }
-    }
 
-    res.json(duplicate);
-  } else {
-    res.status(404).json({ error: "Página não encontrada." });
+      const newSlug = `${page.slug}-copy-${Math.floor(Math.random() * 1000)}`;
+      const duplicate = {
+        ...page,
+        id: "p_" + Math.random().toString(36).substr(2, 9),
+        title: `${page.title} (Cópia)`,
+        slug: newSlug,
+        createdAt: new Date().toISOString(),
+        views: 0,
+        clicks: 0,
+        ctr: 0
+      };
+      db.pages.push(duplicate);
+      writeDB(db);
+      addLog("Duplicação de Página", `Cópia criada com sucesso da página: ${page.title}`);
+
+      if (supabase) {
+        try {
+          const htmlContent = compilePageHtml(duplicate, db);
+          const sbPage = {
+            id: duplicate.id,
+            title: duplicate.title,
+            slug: duplicate.slug,
+            type: duplicate.type,
+            status: duplicate.status || 'Publicada',
+            original_url: duplicate.originalUrl || null,
+            product_name: duplicate.productName || "Produto",
+            html_content: htmlContent,
+            created_at: duplicate.createdAt
+          };
+          supabase.from("pages").insert([sbPage]).then(({ error }) => {
+            if (error) {
+              logSupabaseSync("Duplicação de página", error);
+            } else {
+              console.log(`[Supabase Pages] Duplicação sincronizada no Supabase: ${duplicate.slug}`);
+            }
+          });
+        } catch (sbErr: any) {
+          logSupabaseSync("Duplicação de página (exceção)", sbErr);
+        }
+      }
+
+      return res.json(duplicate);
+    } else {
+      return sendApiError(res, 404, "Página não encontrada.");
+    }
+  } catch (err: any) {
+    console.error("Erro ao duplicar página:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao duplicar a página.");
   }
 });
 
 // Import Page from Backup or HTML metadata
 app.post("/api/pages/import", (req, res) => {
-  const { pageData } = req.body;
-  if (!pageData || !pageData.slug || !pageData.components) {
-    return res.status(400).json({ error: "Dados de importação inválidos ou incompletos." });
-  }
-
   try {
+    const { pageData } = req.body;
+    if (!pageData || !pageData.slug || !pageData.components) {
+      return sendApiError(res, 400, "Dados de importação inválidos ou incompletos.");
+    }
     const db = readDB();
 
     // Check Plan Limits
@@ -2179,32 +2215,37 @@ app.post("/api/pages/import", (req, res) => {
 
 // Delete Page
 app.delete("/api/pages/:id", (req, res) => {
-  const { id } = req.params;
-  const db = readDB();
-  const pIdx = db.pages.findIndex((x: any) => x.id === id);
-  if (pIdx !== -1) {
-    const deletedName = db.pages[pIdx].title;
-    db.pages.splice(pIdx, 1);
-    writeDB(db);
-    addLog("Exclusão de Página", `A página "${deletedName}" foi excluída com sucesso.`);
+  try {
+    const { id } = req.params;
+    const db = readDB();
+    const pIdx = db.pages.findIndex((x: any) => x.id === id);
+    if (pIdx !== -1) {
+      const deletedName = db.pages[pIdx].title;
+      db.pages.splice(pIdx, 1);
+      writeDB(db);
+      addLog("Exclusão de Página", `A página "${deletedName}" foi excluída com sucesso.`);
 
-    if (supabase) {
-      try {
-        supabase.from("pages").delete().eq("id", id).then(({ error }) => {
-          if (error) {
-            logSupabaseSync("Exclusão de página", error);
-          } else {
-            console.log(`[Supabase Pages] Remoção sincronizada no Supabase id: ${id}`);
-          }
-        });
-      } catch (sbErr: any) {
-        logSupabaseSync("Exclusão de página (exceção)", sbErr);
+      if (supabase) {
+        try {
+          supabase.from("pages").delete().eq("id", id).then(({ error }) => {
+            if (error) {
+              logSupabaseSync("Exclusão de página", error);
+            } else {
+              console.log(`[Supabase Pages] Remoção sincronizada no Supabase id: ${id}`);
+            }
+          });
+        } catch (sbErr: any) {
+          logSupabaseSync("Exclusão de página (exceção)", sbErr);
+        }
       }
-    }
 
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ error: "Página não encontrada." });
+      return res.json({ success: true });
+    } else {
+      return sendApiError(res, 404, "Página não encontrada.");
+    }
+  } catch (err: any) {
+    console.error("Erro ao excluir página:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao excluir a página.");
   }
 });
 
@@ -2376,41 +2417,60 @@ app.post("/api/pages/:id/regenerate", async (req, res) => {
 
 // Update Pixel Integrations
 app.get("/api/integrations", (req, res) => {
-  const db = readDB();
-  res.json(db.integrations || {});
+  try {
+    const db = readDB();
+    return res.json(db.integrations || {});
+  } catch (err: any) {
+    console.error("Erro ao buscar integrações:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao carregar integrações.");
+  }
 });
 
 app.post("/api/integrations", (req, res) => {
-  const db = readDB();
-  db.integrations = {
-    ...db.integrations,
-    ...req.body
-  };
-  writeDB(db);
-  addLog("Configuração de Pixel", "Pixels de Rastreamento (Meta, GA, GTM, TikTok) foram atualizados.");
-  res.json(db.integrations);
+  try {
+    const db = readDB();
+    db.integrations = {
+      ...db.integrations,
+      ...req.body
+    };
+    writeDB(db);
+    addLog("Configuração de Pixel", "Pixels de Rastreamento (Meta, GA, GTM, TikTok) foram atualizados.");
+    return res.json(db.integrations);
+  } catch (err: any) {
+    console.error("Erro ao salvar integrações:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao salvar integrações.");
+  }
 });
 
 // Fetch Logs for activity timeline
 app.get("/api/logs", (req, res) => {
-  const db = readDB();
-  res.json(db.logs || []);
+  try {
+    const db = readDB();
+    return res.json(db.logs || []);
+  } catch (err: any) {
+    console.error("Erro ao buscar logs:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao carregar logs.");
+  }
 });
 
 // Trigger tracking of click on a generated page
 app.post("/api/pages/tracking/click", (req, res) => {
-  const { id } = req.body;
-  const db = readDB();
-  const index = db.pages.findIndex((p: any) => p.id === id);
-  if (index !== -1) {
-    db.pages[index].clicks = (db.pages[index].clicks || 0) + 1;
-    // update ctr
-    const views = db.pages[index].views || 1;
-    db.pages[index].ctr = parseFloat(((db.pages[index].clicks / views) * 100).toFixed(2));
-    writeDB(db);
-    res.json({ success: true, clicks: db.pages[index].clicks });
-  } else {
-    res.status(404).json({ error: "Page not found" });
+  try {
+    const { id } = req.body;
+    const db = readDB();
+    const index = db.pages.findIndex((p: any) => p.id === id);
+    if (index !== -1) {
+      db.pages[index].clicks = (db.pages[index].clicks || 0) + 1;
+      const views = db.pages[index].views || 1;
+      db.pages[index].ctr = parseFloat(((db.pages[index].clicks / views) * 100).toFixed(2));
+      writeDB(db);
+      return res.json({ success: true, clicks: db.pages[index].clicks });
+    } else {
+      return sendApiError(res, 404, "Page not found");
+    }
+  } catch (err: any) {
+    console.error("Erro ao registrar clique:", err);
+    return sendApiError(res, 500, err?.message || "Erro interno ao registrar clique.");
   }
 });
 
@@ -3742,6 +3802,17 @@ async function initializeViteAndStaticServing() {
 
 initializeViteAndStaticServing().catch(err => {
   console.error("Falha ao inicializar o servidor/vite:", err);
+});
+
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error("[API Error]", err);
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  const status = err?.status || err?.statusCode || 500;
+  const message = err?.message || "Erro interno do servidor.";
+  return res.status(status).json({ error: message });
 });
 
 if (process.env.VERCEL) {
