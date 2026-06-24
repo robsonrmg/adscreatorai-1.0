@@ -6,7 +6,6 @@ import AIPageSetup from './components/AIPageSetup';
 import EditorWorkspace from './components/EditorWorkspace';
 import ActivityLogPanel from './components/ActivityLogPanel';
 import UserProfileDropdown from './components/UserProfileDropdown';
-import LoginScreen from './components/LoginScreen';
 import SupabaseConnectionBanner from './components/SupabaseConnectionBanner';
 import { checkConnection } from './lib/supabase';
 import {
@@ -29,9 +28,6 @@ import {
   Sliders,
   Sparkle,
   Download,
-  LogIn,
-  Lock,
-  ShieldAlert,
   Upload
 } from 'lucide-react';
 
@@ -42,9 +38,7 @@ export default function App() {
   const [pixels, setPixels] = useState<PixelIntegrations | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
-    return localStorage.getItem('ads_is_logged_in') === 'true';
-  });
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(true);
   
   const [activeTab, setActiveTab] = useState<'pages' | 'plans'>('pages');
   const [viewingWorkOrderId, setViewingWorkOrderId] = useState<string | null>(null); // For active Editor Workspace
@@ -346,86 +340,6 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.setItem('ads_is_logged_in', 'false');
-    setIsLoggedIn(false);
-    triggerToast("Você desconectou da sua conta.");
-  };
-
-  const handleLoginSubmit = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      const text = await res.text();
-      let data: any = {};
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        data = { error: `Servidor retornou resposta não-JSON (Status ${res.status}): ${text.slice(0, 100)}` };
-      }
-      if (res.ok) {
-        setProfile(data);
-        localStorage.setItem('ads_is_logged_in', 'true');
-        setIsLoggedIn(true);
-        triggerToast(`Boas-vindas de volta, ${data.name}!`);
-        fetchData();
-        return { success: true };
-      }
-      return { success: false, error: data.error || "E-mail ou senha incorretos." };
-    } catch (err: any) {
-      console.error(err);
-      return { success: false, error: `Erro de conexão ao servidor: ${err.message || 'Sem sinal de rede.'} Verifique sua internet.` };
-    }
-  };
-
-  const handleRegisterSubmit = async (name: string, email: string, password: string, avatarUrl: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password, avatarUrl }),
-      });
-      const text = await res.text();
-      let data: any = {};
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        data = { error: `Servidor retornou resposta não-JSON (Status ${res.status}): ${text.slice(0, 100)}` };
-      }
-      if (res.ok) {
-        setProfile(data);
-        localStorage.setItem('ads_is_logged_in', 'true');
-        setIsLoggedIn(true);
-        triggerToast(`Conta criada com sucesso, ${name}!`);
-        fetchData();
-        return { success: true };
-      }
-      return { success: false, error: data.error || "Erro ao criar conta." };
-    } catch (err: any) {
-      console.error(err);
-      return { success: false, error: `Erro de conexão ao servidor: ${err.message || 'Sem sinal de rede.'} Verifique sua internet.` };
-    }
-  };
-
-  const handleHeaderLogin = async (email: string, password?: string) => {
-    if (!email || !email.includes('@')) {
-      triggerToast("Por favor, insira um e-mail válido!");
-      return;
-    }
-    if (!password || password.length < 3) {
-      triggerToast("A senha deve ter pelo menos 3 caracteres!");
-      return;
-    }
-    
-    const res = await handleLoginSubmit(email, password);
-    if (!res.success) {
-      triggerToast(res.error || "Erro ao efetuar login. Tente novamente.");
-    }
-  };
-
   // 4. Duplicate page
   const handleDuplicatePage = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -606,20 +520,6 @@ export default function App() {
   const currentCount = pages.length;
   const limitReached = currentCount >= limit;
 
-  if (!isLoggedIn) {
-    return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-green-400 selection:text-slate-950 flex items-center justify-center">
-        {toastMessage && (
-          <div className="fixed bottom-6 right-6 bg-slate-900 border border-green-500/50 text-white rounded-xl py-3 px-5 shadow-2xl flex items-center gap-3 z-50 animate-fade-in font-sans max-w-sm">
-            <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
-            <span className="text-xs font-semibold">{toastMessage}</span>
-          </div>
-        )}
-        <LoginScreen onLogin={handleLoginSubmit} onRegister={handleRegisterSubmit} />
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-green-400 selection:text-slate-950">
       
@@ -654,84 +554,47 @@ export default function App() {
           {/* Quick Header Stats */}
           <div className="flex items-center gap-6">
             
-            {!isLoggedIn ? (
-              <form onSubmit={(e) => {
-                e.preventDefault();
-                const form = e.currentTarget;
-                const emailInput = form.elements.namedItem('headerEmail') as HTMLInputElement;
-                const passwordInput = form.elements.namedItem('headerPassword') as HTMLInputElement;
-                handleHeaderLogin(emailInput.value, passwordInput.value);
-              }} className="flex flex-col sm:flex-row items-center gap-2 bg-slate-900 border border-slate-800 p-2 sm:p-2 sm:py-1.5 sm:px-3 rounded-2xl">
-                <div className="flex items-center gap-2">
-                  <input
-                    name="headerEmail"
-                    type="email"
-                    required
-                    placeholder="Login / E-mail"
-                    className="bg-slate-950 border border-slate-800 focus:border-green-500 rounded-lg py-1 px-2.5 text-[11px] text-white placeholder:text-slate-500 focus:outline-none w-36 sm:w-44 font-sans"
-                  />
-                  <input
-                    name="headerPassword"
-                    type="password"
-                    required
-                    placeholder="Senha"
-                    className="bg-slate-950 border border-slate-800 focus:border-green-500 rounded-lg py-1 px-2.5 text-[11px] text-white placeholder:text-slate-500 focus:outline-none w-24 sm:w-28 font-sans"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="bg-gradient-to-r from-green-400 to-emerald-500 hover:from-green-300 hover:to-emerald-400 text-slate-950 font-black px-3.5 py-1 rounded-lg text-[11px] uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer border-0 w-full sm:w-auto justify-center font-sans shadow shadow-green-950/20"
-                >
-                  <LogIn size={11} strokeWidth={3} />
-                  Entrar
-                </button>
-              </form>
-            ) : (
-              <>
-                {/* Active profile limit status tracker on header */}
-                <div className="hidden md:flex flex-col items-end text-right">
-                  <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider">Limites de Páginas</span>
-                  <span className="text-xs font-bold text-slate-200 mt-0.5">
-                    {currentCount} / <span className="text-slate-400 font-semibold">{limit === 999999 ? 'Ilimitado' : `${limit} un.`}</span>
-                  </span>
-                  <div className="w-24 bg-slate-800 h-1 rounded-full mt-1.5 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${limitReached ? 'bg-red-500' : 'bg-green-400'}`}
-                      style={{ width: `${Math.min(100, Math.round((currentCount / limit) * 100))}%` }}
-                    ></div>
-                  </div>
-                </div>
+            {/* Active profile limit status tracker on header */}
+            <div className="hidden md:flex flex-col items-end text-right">
+              <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider">Limites de Páginas</span>
+              <span className="text-xs font-bold text-slate-200 mt-0.5">
+                {currentCount} / <span className="text-slate-400 font-semibold">{limit === 999999 ? 'Ilimitado' : `${limit} un.`}</span>
+              </span>
+              <div className="w-24 bg-slate-800 h-1 rounded-full mt-1.5 overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${limitReached ? 'bg-red-500' : 'bg-green-400'}`}
+                  style={{ width: `${Math.min(100, Math.round((currentCount / limit) * 100))}%` }}
+                ></div>
+              </div>
+            </div>
 
-                {/* Plan Badge toggles tab */}
-                <div className="flex bg-slate-900 border border-slate-800 p-1 rounded-lg text-xs font-semibold">
-                  <button
-                    onClick={() => setActiveTab('pages')}
-                    className={`py-1.5 px-4 rounded-md transition-all cursor-pointer ${
-                      activeTab === 'pages' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Páginas
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('plans')}
-                    className={`py-1.5 px-4 rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${
-                      activeTab === 'plans' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    <CreditCard size={12} />
-                    Plano & Domínios
-                  </button>
-                </div>
+            {/* Plan Badge toggles tab */}
+            <div className="flex bg-slate-900 border border-slate-800 p-1 rounded-lg text-xs font-semibold">
+              <button
+                onClick={() => setActiveTab('pages')}
+                className={`py-1.5 px-4 rounded-md transition-all cursor-pointer ${
+                  activeTab === 'pages' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Páginas
+              </button>
+              <button
+                onClick={() => setActiveTab('plans')}
+                className={`py-1.5 px-4 rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${
+                  activeTab === 'plans' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <CreditCard size={12} />
+                Plano & Domínios
+              </button>
+            </div>
 
-                {/* Profile Dropdown with picture upload / logout option */}
-                {profile && (
-                  <UserProfileDropdown
-                    profile={profile}
-                    onUpdateProfile={handleUpdateProfile}
-                    onLogout={handleLogout}
-                  />
-                )}
-              </>
+            {/* Profile Dropdown with picture upload */}
+            {profile && (
+              <UserProfileDropdown
+                profile={profile}
+                onUpdateProfile={handleUpdateProfile}
+              />
             )}
 
           </div>
@@ -742,61 +605,7 @@ export default function App() {
       {/* DASHBOARD CONTENT BOUNDS */}
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-10 relative">
         
-        {!isLoggedIn && (
-          <div className="absolute inset-x-0 top-0 bottom-0 bg-slate-955/95 backdrop-blur-lg rounded-2xl flex flex-col items-center justify-center text-center p-6 sm:p-8 z-30 border border-slate-900/60 shadow-2xl min-h-[500px]">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-green-500 to-emerald-600 p-[1px] shadow-lg shadow-green-950/20 mb-4 flex items-center justify-center">
-              <div className="w-full h-full bg-slate-950 rounded-2xl flex items-center justify-center text-green-400">
-                <Lock size={20} />
-              </div>
-            </div>
-            <h3 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
-              <ShieldAlert className="text-amber-500" size={18} />
-              Acesso Restrito / Painel Bloqueado
-            </h3>
-            <p className="text-xs text-slate-400 max-w-sm mt-2 font-medium leading-relaxed font-sans">
-              Insira as suas credenciais no formulário integrado abaixo ou no painel superior direito para liberar o AdsCreator AI.
-            </p>
 
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const form = e.currentTarget;
-              const emailInput = form.elements.namedItem('mainEmail') as HTMLInputElement;
-              const passwordInput = form.elements.namedItem('mainPassword') as HTMLInputElement;
-              handleHeaderLogin(emailInput.value, passwordInput.value);
-            }} className="mt-6 w-full max-w-sm bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4 shadow-xl">
-              <div className="space-y-3">
-                <div className="text-left">
-                  <label className="text-[10px] uppercase font-bold tracking-wider font-mono text-slate-400">Usuário / E-mail</label>
-                  <input
-                    name="mainEmail"
-                    type="email"
-                    required
-                    placeholder="Ex: ribeiromoreira91@gmail.com"
-                    defaultValue="ribeiromoreira91@gmail.com"
-                    className="w-full bg-slate-955 border border-slate-800 focus:border-green-500 rounded-xl py-2.5 px-3.5 text-xs text-white placeholder:text-slate-600 focus:outline-none mt-1 font-sans"
-                  />
-                </div>
-                <div className="text-left">
-                  <label className="text-[10px] uppercase font-bold tracking-wider font-mono text-slate-400">Senha de Acesso</label>
-                  <input
-                    name="mainPassword"
-                    type="password"
-                    required
-                    placeholder="Digite sua senha de acesso"
-                    className="w-full bg-slate-955 border border-slate-800 focus:border-green-500 rounded-xl py-2.5 px-3.5 text-xs text-white placeholder:text-slate-600 focus:outline-none mt-1 font-sans"
-                  />
-                </div>
-              </div>
-              <button
-                type="submit"
-                className="w-full bg-gradient-to-r from-green-400 to-emerald-500 hover:from-green-300 hover:to-emerald-400 text-slate-950 font-black py-3 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer border-0 shadow shadow-green-950/20"
-              >
-                <LogIn size={13} strokeWidth={2.5} />
-                Entrar no Painel
-              </button>
-            </form>
-          </div>
-        )}
         
         {activeTab === 'pages' && (
           <div className="space-y-10">

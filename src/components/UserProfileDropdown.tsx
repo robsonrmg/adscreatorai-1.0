@@ -5,7 +5,6 @@ import { User, Mail, LogOut, Check, Camera, Loader2, ChevronDown, Sliders, Uploa
 interface UserProfileDropdownProps {
   profile: ClientProfile;
   onUpdateProfile: (name: string, email: string, avatarUrl: string) => Promise<boolean>;
-  onLogout: () => void;
 }
 
 const PRESET_AVATARS = [
@@ -41,7 +40,7 @@ const PRESET_AVATARS = [
   }
 ];
 
-export default function UserProfileDropdown({ profile, onUpdateProfile, onLogout }: UserProfileDropdownProps) {
+export default function UserProfileDropdown({ profile, onUpdateProfile }: UserProfileDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(profile.name);
@@ -359,17 +358,7 @@ export default function UserProfileDropdown({ profile, onUpdateProfile, onLogout
           {/* LOGOUT FOOTER STATE */}
           <div className="p-3 bg-slate-950 border-t border-slate-850 flex items-center justify-between">
             <span className="text-[10px] text-slate-500 font-mono font-medium">AdsCreator AI v1</span>
-            <button
-              onClick={() => {
-                setIsOpen(false);
-                onLogout();
-              }}
-              className="flex items-center gap-2 text-rose-400 hover:text-white hover:bg-rose-950/40 border border-transparent hover:border-rose-900 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer bg-transparent"
-              id="logout-button"
-            >
-              <LogOut size={13} />
-              Sair da Conta
-            </button>
+            <span className="text-[10px] text-green-400 font-mono font-bold">Acesso Liberado</span>
           </div>
         </div>
       )}

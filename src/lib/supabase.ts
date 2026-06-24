@@ -3,8 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 // Pegando as variáveis de ambiente do Supabase (Vite / Frontend)
 const meta = import.meta as any;
 
-const rawUrl = meta.env?.VITE_SUPABASE_URL || meta.env?.SUPABASE_URL || "https://knbjqbavyfmecvyvnqmh.supabase.co";
-const rawKey = meta.env?.VITE_SUPABASE_ANON_KEY || meta.env?.SUPABASE_ANON_KEY || "sb_publishable_QMVHItYTuZaEO2OrtXGY5A_-EhatPnV";
+const rawUrl = meta.env?.VITE_SUPABASE_URL || meta.env?.SUPABASE_URL || "";
+const rawKey = meta.env?.VITE_SUPABASE_ANON_KEY || meta.env?.SUPABASE_ANON_KEY || "";
 
 const isConfigured = rawUrl.trim() !== "" && rawKey.trim() !== "";
 
