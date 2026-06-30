@@ -359,6 +359,10 @@ function getGeminiClient(): GoogleGenAI {
 // Retry wrapper for Gemini API calls to handle transient errors such as 503 (service unavailable) or 429 (rate limits)
 async function generateContentWithRetry(ai: GoogleGenAI, params: any, maxRetries = 5, initialDelayMs = 2000) {
   let attempt = 0;
+  const isVercel = !!process.env.VERCEL;
+  const actualMaxRetries = isVercel ? 2 : maxRetries;
+  const actualDelayMs = isVercel ? 1000 : initialDelayMs;
+
   while (true) {
     try {
       return await ai.models.generateContent(params);
@@ -377,9 +381,9 @@ async function generateContentWithRetry(ai: GoogleGenAI, params: any, maxRetries
                             error.message.includes("Resource has been exhausted")
                           ));
       
-      if (isTransient && attempt < maxRetries) {
-        const delay = initialDelayMs * Math.pow(2.2, attempt) * (0.8 + Math.random() * 0.4);
-        console.warn(`[Gemini API] Erro transitório detectado (${error?.message || error}). Tentamos novamente em ${Math.round(delay)}ms... (Tentativa ${attempt} de ${maxRetries})`);
+      if (isTransient && attempt < actualMaxRetries) {
+        const delay = actualDelayMs * Math.pow(2.2, attempt) * (0.8 + Math.random() * 0.4);
+        console.warn(`[Gemini API] Erro transitório detectado (${error?.message || error}). Tentamos novamente em ${Math.round(delay)}ms... (Tentativa ${attempt} de ${actualMaxRetries})`);
         await new Promise(resolve => setTimeout(resolve, delay));
       } else {
         throw error;
@@ -527,7 +531,8 @@ async function extractAndDownloadImages(productUrl: string, affiliateUrl: string
     }
   }
 
-  const uniqueCandidates = Array.from(new Set(candidateUrls)).slice(0, 30);
+  // Limit to at most 8 candidates to avoid hitting execution timeouts on serverless environments (like Vercel 10s limit)
+  const uniqueCandidates = Array.from(new Set(candidateUrls)).slice(0, 8);
   console.log(`[AdsCreator AI] Candidatas qualificadas de mídias identificadas para download: ${uniqueCandidates.length}`);
 
   const STORAGE_DIR = path.join(process.cwd(), "storage");
@@ -593,7 +598,7 @@ async function extractAndDownloadImages(productUrl: string, affiliateUrl: string
       }
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 seconds download safety timeout per file
+      const timeoutId = setTimeout(() => controller.abort(), 1500); // 1.5 seconds download safety timeout per file
       const dlRes = await fetch(resolvedUrl, { signal: controller.signal });
       clearTimeout(timeoutId);
 
@@ -791,7 +796,7 @@ async function fetchAndAnalyzeUrl(targetUrl: string, pageType: string, generatio
   // 2. Perform a lightweight HTTP fetch to capture meta tags and full text descriptions from actual page if possible
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000); // 6 seconds timeout for full scraping
+    const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 seconds timeout for full scraping
     const fetchRes = await fetch(targetUrl, { 
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"

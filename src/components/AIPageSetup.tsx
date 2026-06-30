@@ -180,11 +180,34 @@ export default function AIPageSetup({ onBack, onPageCreated, onEditPage, userPla
       });
 
       if (!response.ok) {
-        const errJson = await response.json();
-        throw new Error(errJson.error || "Houve um erro técnico imprevisto na geração de IA.");
+        let errMsg = "Houve um erro técnico imprevisto na geração de IA.";
+        try {
+          const errJson = await response.json();
+          errMsg = errJson.error || errMsg;
+        } catch (e) {
+          try {
+            const text = await response.text();
+            if (text.includes("timeout") || text.includes("Gateway Timeout") || text.includes("504") || text.includes("502")) {
+              errMsg = "Tempo limite atingido na Vercel (limite de 10 segundos para funções serverless). Por favor, use uma URL de oferta mais leve ou tente novamente em instantes.";
+            } else if (text) {
+              errMsg = text.length > 200 ? text.substring(0, 197) + "..." : text;
+            }
+          } catch (_) {}
+        }
+        throw new Error(errMsg);
       }
 
-      const newPage: Page = await response.json();
+      let newPage: Page;
+      try {
+        newPage = await response.json();
+      } catch (jsonErr) {
+        let textFallback = "";
+        try { textFallback = await response.text(); } catch (_) {}
+        if (textFallback.includes("timeout") || textFallback.includes("504") || textFallback.includes("502")) {
+          throw new Error("Tempo limite de geração excedido na Vercel (Timeout). Por favor, reduza a complexidade da página ou tente novamente.");
+        }
+        throw new Error("O servidor retornou uma resposta inesperada do tipo texto. Detalhes: " + (textFallback.substring(0, 100) || "Estrutura JSON inválida"));
+      }
       
       setTimeout(() => {
         setIsGenerating(false);
@@ -210,10 +233,30 @@ export default function AIPageSetup({ onBack, onPageCreated, onEditPage, userPla
         headers: { 'Content-Type': 'application/json' }
       });
       if (!res.ok) {
-        const errJson = await res.json();
-        throw new Error(errJson.error || "Erro ao regenerar página por IA.");
+        let errMsg = "Erro ao regenerar página por IA.";
+        try {
+          const errJson = await res.json();
+          errMsg = errJson.error || errMsg;
+        } catch (e) {
+          try {
+            const text = await res.text();
+            if (text.includes("timeout") || text.includes("Gateway Timeout") || text.includes("504") || text.includes("502")) {
+              errMsg = "Tempo limite atingido na Vercel (limite de 10 segundos). Por favor, tente novamente.";
+            } else if (text) {
+              errMsg = text.length > 200 ? text.substring(0, 197) + "..." : text;
+            }
+          } catch (_) {}
+        }
+        throw new Error(errMsg);
       }
-      const updatedPage: Page = await res.json();
+      let updatedPage: Page;
+      try {
+        updatedPage = await res.json();
+      } catch (jsonErr) {
+        let textFallback = "";
+        try { textFallback = await res.text(); } catch (_) {}
+        throw new Error("O servidor retornou uma resposta inesperada do tipo texto. Detalhes: " + (textFallback.substring(0, 100) || "Estrutura JSON inválida"));
+      }
       setSuccessPage(updatedPage);
       setRegenerateSuccess(true);
       setTimeout(() => setRegenerateSuccess(false), 3000);
