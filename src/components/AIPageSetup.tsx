@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { PageType, Page } from '../types';
-import { parseApiResponse } from '../lib/apiResponse';
 import {
   Sparkles,
   ArrowLeft,
@@ -180,17 +179,12 @@ export default function AIPageSetup({ onBack, onPageCreated, onEditPage, userPla
         }),
       });
 
-      const parsed = await parseApiResponse(response);
-
       if (!response.ok) {
-        throw new Error(parsed.errorMessage || parsed.data?.error || "Houve um erro técnico imprevisto na geração de IA.");
+        const errJson = await response.json();
+        throw new Error(errJson.error || "Houve um erro técnico imprevisto na geração de IA.");
       }
 
-      if (!parsed.data || typeof parsed.data !== 'object') {
-        throw new Error(parsed.errorMessage || "A resposta da IA não veio em formato válido.");
-      }
-
-      const newPage: Page = parsed.data as Page;
+      const newPage: Page = await response.json();
       
       setTimeout(() => {
         setIsGenerating(false);
@@ -215,15 +209,11 @@ export default function AIPageSetup({ onBack, onPageCreated, onEditPage, userPla
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
-      const parsed = await parseApiResponse(res);
-
       if (!res.ok) {
-        throw new Error(parsed.errorMessage || parsed.data?.error || "Erro ao regenerar página por IA.");
+        const errJson = await res.json();
+        throw new Error(errJson.error || "Erro ao regenerar página por IA.");
       }
-      if (!parsed.data || typeof parsed.data !== 'object') {
-        throw new Error(parsed.errorMessage || "A resposta da regeneração não veio em formato válido.");
-      }
-      const updatedPage: Page = parsed.data as Page;
+      const updatedPage: Page = await res.json();
       setSuccessPage(updatedPage);
       setRegenerateSuccess(true);
       setTimeout(() => setRegenerateSuccess(false), 3000);

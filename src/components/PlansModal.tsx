@@ -185,74 +185,8 @@ export default function PlansModal({ profile, pixelSettings, onUpdatePlan, onUpd
   };
 
   return (
-    <div className="space-y-12" id="plans-modal">
+    <div className="space-y-6" id="plans-modal">
       
-      {/* SECTION 1: SYSTEM PLANS SELECT */}
-      <div>
-        <div className="flex items-center gap-2 mb-4">
-          <CreditCard className="text-green-400" size={20} />
-          <h2 className="text-xl font-bold text-white">Plano Ativo & Faturamento</h2>
-        </div>
-        <p className="text-sm text-slate-400 mb-6 font-sans">
-          Gerencie seu plano de assinatura do **AdsCreator AI** para expandir seus limites de tráfego e publicação de URLs.
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {PLANS.map((plan) => {
-            const isCurrent = profile?.planId === plan.id;
-            return (
-              <div
-                key={plan.id}
-                className={`relative rounded-xl border p-6 flex flex-col justify-between transition-all ${
-                  isCurrent
-                    ? 'bg-slate-900/60 border-green-500 shadow-lg shadow-green-950/20'
-                    : 'bg-slate-900/20 border-slate-800 hover:border-slate-700'
-                }`}
-              >
-                {isCurrent && (
-                  <span className="absolute -top-3 right-4 bg-green-500 text-slate-950 text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full">
-                    Plano Ativo
-                  </span>
-                )}
-                <div>
-                  <h3 className="text-lg font-bold text-white mb-1">{plan.name}</h3>
-                  <div className="flex flex-col mb-4">
-                    <span className="text-2xl font-extrabold text-white">{plan.price}</span>
-                    {plan.subPrice && (
-                      <span className="text-[10px] font-mono text-slate-400 mt-1 font-medium">{plan.subPrice}</span>
-                    )}
-                  </div>
-                  <ul className="space-y-2 mb-6">
-                    {plan.features.map((f, idx) => (
-                      <li key={idx} className="flex items-start gap-2 text-xs text-slate-300">
-                        <Check size={14} className="text-green-500 mt-0.5 flex-shrink-0" />
-                        <span>{f}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                {isCurrent ? (
-                  <button
-                    disabled
-                    className="w-full py-2.5 px-4 rounded-lg bg-green-950 text-green-400 border border-green-800 text-xs font-bold uppercase tracking-wider cursor-default text-center"
-                  >
-                    Ativado no momento
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => onUpdatePlan(plan.id)}
-                    className="w-full py-2.5 px-4 rounded-lg bg-slate-800 hover:bg-slate-705 text-white hover:bg-slate-700 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer text-center"
-                  >
-                    Fazer Upgrade para {plan.name.split(' ')[0]}
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         
         {/* SECTION 2: DOMAIN MANAGEMENT */}

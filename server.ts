@@ -25,22 +25,8 @@ const PORT = 3000;
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
-function getEnvValue(...keys: string[]) {
-  for (const key of keys) {
-    const value = process.env[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-  return "";
-}
-
-function sendApiError(res: any, status: number, message: string) {
-  return res.status(status).json({ error: message });
-}
-
 // 2. Inicializar o cliente do Supabase usando variáveis de ambiente
-let rawSupabaseUrl = getEnvValue("SUPABASE_URL", "VITE_SUPABASE_URL").trim();
+let rawSupabaseUrl = (process.env.SUPABASE_URL || "").trim();
 // Limpar a URL caso termine com o sufixo da API RESTful /rest/v1 ou /v1, comumente colado por engano
 rawSupabaseUrl = rawSupabaseUrl.replace(/\/rest\/v1\/?$/, "");
 rawSupabaseUrl = rawSupabaseUrl.replace(/\/v1\/?$/, "");
@@ -58,14 +44,14 @@ const isPlaceholder = (val: string) => {
 };
 
 const SUPABASE_URL = isPlaceholder(rawSupabaseUrl) ? "" : rawSupabaseUrl;
-const rawAnonKey = getEnvValue("SUPABASE_ANON_KEY", "SUPABASE_PUBLISHABLE_KEY", "VITE_SUPABASE_ANON_KEY").trim();
+const rawAnonKey = (process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || "").trim();
 const SUPABASE_ANON_KEY = isPlaceholder(rawAnonKey) ? "" : rawAnonKey;
 
-const rawServiceRoleKey = getEnvValue("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY").trim();
+const rawServiceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "").trim();
 const SUPABASE_SERVICE_ROLE_KEY = isPlaceholder(rawServiceRoleKey) ? "" : rawServiceRoleKey;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  console.warn("⚠️ ATENÇÃO: As credenciais do Supabase não foram configuradas no arquivo .env ou são placeholders.");
+  // Silent fallback - Supabase is only for optional creator internal sync, so no warnings are needed
 }
 
 // O banco de dados no servidor prefere usar o service_role para contornar políticas RLS legítimas de forma segura.
@@ -73,12 +59,7 @@ const serverSupabaseKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
 const supabase = (SUPABASE_URL && serverSupabaseKey) ? createClient(SUPABASE_URL, serverSupabaseKey) : null;
 
 function logSupabaseSync(action: string, error: any) {
-  const errMsg = error?.message || String(error);
-  if (errMsg.toLowerCase().includes("fetch failed") || errMsg.toLowerCase().includes("failed to fetch") || errMsg.toLowerCase().includes("timeout") || errMsg.toLowerCase().includes("networkerror")) {
-    console.log(`[Supabase Async Sync] ${action}: Supabase de contingência offline (fetch failed).`);
-  } else {
-    console.log(`[Supabase Async Sync] ${action} falhou:`, errMsg);
-  }
+  // Silent sync to prevent throwing false error alerts for clients since Supabase is only for creator's optional internal use.
 }
 
 // Tentar criar ou garantir a existência do bucket 'page-media' de forma pública no Supabase
@@ -89,31 +70,16 @@ async function ensureBucketExists() {
       if (!listError && buckets) {
         const exists = buckets.some(b => b.name === "page-media");
         if (exists) {
-          console.log("[Supabase Storage] Bucket 'page-media' já existe e está pronto.");
           return;
         }
       }
 
-      const { data, error } = await supabase.storage.createBucket("page-media", {
+      await supabase.storage.createBucket("page-media", {
         public: true,
         allowedMimeTypes: ["image/png", "image/jpeg", "image/webp", "image/svg+xml", "image/gif"]
       });
-
-      if (error) {
-        if (error.message && error.message.includes("fetch failed")) {
-          console.log("[Supabase Storage] Supabase offline ou inacessível no momento.");
-        } else {
-          console.log(`[Supabase Storage] Bucket 'page-media' status:`, error.message);
-        }
-      } else {
-        console.log(`[Supabase Storage] Bucket 'page-media' criado com sucesso de modo público.`);
-      }
     } catch (e: any) {
-      if (e.message && e.message.includes("fetch failed")) {
-        console.log("[Supabase Storage] Supabase offline ou inacessível no momento.");
-      } else {
-        console.log(`[Supabase Storage] Nota na inicialização automática do bucket 'page-media':`, e.message || e);
-      }
+      // Quietly handle connection errors
     }
   }
 }
@@ -151,30 +117,10 @@ async function checkAndResetProjectCounters() {
 }
 checkAndResetProjectCounters();
 
-function getStorageDir() {
-  const candidates = [
-    process.env.STORAGE_DIR,
-    process.env.TMPDIR,
-    process.env.TMP,
-    "/tmp",
-    path.join(process.cwd(), "storage")
-  ].filter(Boolean) as string[];
-
-  for (const candidate of candidates) {
-    try {
-      if (!fs.existsSync(candidate)) {
-        fs.mkdirSync(candidate, { recursive: true });
-      }
-      return candidate;
-    } catch (error) {
-      console.warn(`[Storage] Não foi possível usar ${candidate}:`, error);
-    }
-  }
-
-  return path.join(process.cwd(), "storage");
+const STORAGE_DIR = path.join(process.cwd(), "storage");
+if (!fs.existsSync(STORAGE_DIR)) {
+  fs.mkdirSync(STORAGE_DIR, { recursive: true });
 }
-
-const STORAGE_DIR = getStorageDir();
 app.use("/storage", express.static(STORAGE_DIR));
 
 // O arquivo DB_FILE e as funções antigas readDB() e writeDB() podem ser removidas daqui.
@@ -994,19 +940,8 @@ Sua resposta DEVE ser estritamente em formato JSON válido, escrito em ${chosenL
       }
     });
 
-    if (response?.text) {
-      const rawText = String(response.text).trim();
-      const cleanedText = rawText
-        .replace(/^```json\s*/i, "")
-        .replace(/^```\s*/i, "")
-        .replace(/```$/i, "")
-        .trim();
-
-      try {
-        generatedResult = JSON.parse(cleanedText);
-      } catch (parseError) {
-        console.warn("Gemini retornou conteúdo que não era JSON válido. Usando fallback inteligente.", { rawText, parseError });
-      }
+    if (response.text) {
+      generatedResult = JSON.parse(response.text.trim());
     }
   } catch (error) {
     console.error("Erro na geração da IA com Gemini, usando cópia de contingência inteligente:", error);
@@ -1724,45 +1659,40 @@ app.get("/api/profile", async (req, res) => {
 
 // Update Profile Custom Domain / Subdomain
 app.post("/api/profile/domain", async (req, res) => {
-  try {
-    const { subdomain, customDomain } = req.body;
-    const db = readDB();
-    db.profile = db.profile || {};
-    if (subdomain !== undefined) db.profile.subdomain = subdomain;
-    if (customDomain !== undefined) db.profile.customDomain = customDomain;
-    writeDB(db);
-    
-    addLog("Mudança de Domínio", `Sua URL de publicação foi redefinida. Subdomínio: ${subdomain || "-"} | Domínio Próprio: ${customDomain || "-"}`);
+  const { subdomain, customDomain } = req.body;
+  const db = readDB();
+  db.profile = db.profile || {};
+  if (subdomain !== undefined) db.profile.subdomain = subdomain;
+  if (customDomain !== undefined) db.profile.customDomain = customDomain;
+  writeDB(db);
+  
+  addLog("Mudança de Domínio", `Sua URL de publicação foi redefinida. Subdomínio: ${subdomain || "-"} | Domínio Próprio: ${customDomain || "-"}`);
 
-    if (supabase) {
-      try {
-        const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
-        const payload: any = {
-          subdomain: subdomain || db.profile.subdomain,
-          custom_domain: customDomain || db.profile.customDomain
-        };
+  if (supabase) {
+    try {
+      const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
+      const payload: any = {
+        subdomain: subdomain || db.profile.subdomain,
+        custom_domain: customDomain || db.profile.customDomain
+      };
 
-        if (firstProfile?.id) {
-          await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
-        } else {
-          await supabase.from("profiles").insert({
-            name: db.profile.name || "Afiliado Autoridade",
-            email: db.profile.email || "seu-email@gmail.com",
-            plan_id: db.profile.planId || "starter",
-            pages_created_count: db.profile.pagesCreatedCount || 0,
-            ...payload
-          });
-        }
-      } catch (err: any) {
-        logSupabaseSync("Sincronizar alteração de domínio", err);
+      if (firstProfile?.id) {
+        await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
+      } else {
+        await supabase.from("profiles").insert({
+          name: db.profile.name || "Afiliado Autoridade",
+          email: db.profile.email || "seu-email@gmail.com",
+          plan_id: db.profile.planId || "starter",
+          pages_created_count: db.profile.pagesCreatedCount || 0,
+          ...payload
+        });
       }
+    } catch (err: any) {
+      logSupabaseSync("Sincronizar alteração de domínio", err);
     }
-
-    return res.json(db.profile);
-  } catch (err: any) {
-    console.error("Erro ao salvar domínio do perfil:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao atualizar o domínio do perfil.");
   }
+
+  res.json(db.profile);
 });
 
 // Verify custom domain DNS configuration (CNAME target)
@@ -1827,87 +1757,77 @@ app.post("/api/domains/verify", async (req, res) => {
 
 // Update Plan Limit
 app.post("/api/profile/plan", async (req, res) => {
-  try {
-    const { planId } = req.body;
-    const db = readDB();
-    db.profile = db.profile || {};
-    db.profile.planId = planId;
-    writeDB(db);
-    
-    addLog("Alteração de Plano", `Seu plano do AdsCreator AI foi alterado para: ${planId.toUpperCase()}`);
+  const { planId } = req.body;
+  const db = readDB();
+  db.profile = db.profile || {};
+  db.profile.planId = planId;
+  writeDB(db);
+  
+  addLog("Alteração de Plano", `Seu plano do AdsCreator AI foi alterado para: ${planId.toUpperCase()}`);
 
-    if (supabase) {
-      try {
-        const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
-        const payload: any = {
-          plan_id: planId
-        };
+  if (supabase) {
+    try {
+      const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
+      const payload: any = {
+        plan_id: planId
+      };
 
-        if (firstProfile?.id) {
-          await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
-        } else {
-          await supabase.from("profiles").insert({
-            name: db.profile.name || "Afiliado Autoridade",
-            email: db.profile.email || "seu-email@gmail.com",
-            plan_id: planId,
-            pages_created_count: db.profile.pagesCreatedCount || 0,
-            subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai"
-          });
-        }
-      } catch (err: any) {
-        logSupabaseSync("Sincronizar alteração de plano", err);
+      if (firstProfile?.id) {
+        await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
+      } else {
+        await supabase.from("profiles").insert({
+          name: db.profile.name || "Afiliado Autoridade",
+          email: db.profile.email || "seu-email@gmail.com",
+          plan_id: planId,
+          pages_created_count: db.profile.pagesCreatedCount || 0,
+          subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai"
+        });
       }
+    } catch (err: any) {
+      logSupabaseSync("Sincronizar alteração de plano", err);
     }
-
-    return res.json(db.profile);
-  } catch (err: any) {
-    console.error("Erro ao atualizar plano do perfil:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao atualizar o plano do perfil.");
   }
+
+  res.json(db.profile);
 });
 
 // Update Profile Details (Name, Email, Avatar URL)
 app.post("/api/profile/update", async (req, res) => {
-  try {
-    const { name, email, avatarUrl } = req.body;
-    const db = readDB();
-    db.profile = db.profile || {};
-    if (name !== undefined) db.profile.name = name;
-    if (email !== undefined) db.profile.email = email;
-    if (avatarUrl !== undefined) db.profile.avatarUrl = avatarUrl;
-    writeDB(db);
-    
-    addLog("Atualização de Perfil", `Seus dados de acesso foram atualizados. Nome: ${name || db.profile.name}`);
+  const { name, email, avatarUrl } = req.body;
+  const db = readDB();
+  db.profile = db.profile || {};
+  if (name !== undefined) db.profile.name = name;
+  if (email !== undefined) db.profile.email = email;
+  if (avatarUrl !== undefined) db.profile.avatarUrl = avatarUrl;
+  writeDB(db);
+  
+  addLog("Atualização de Perfil", `Seus dados de acesso foram atualizados. Nome: ${name || db.profile.name}`);
 
-    if (supabase) {
-      try {
-        const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
-        const payload: any = {};
-        if (name !== undefined) payload.name = name;
-        if (email !== undefined) payload.email = email;
+  if (supabase) {
+    try {
+      const { data: firstProfile } = await supabase.from("profiles").select("id").limit(1).maybeSingle();
+      const payload: any = {};
+      if (name !== undefined) payload.name = name;
+      if (email !== undefined) payload.email = email;
 
-        if (firstProfile?.id) {
-          await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
-        } else {
-          await supabase.from("profiles").insert({
-            name: name || "Afiliado Autoridade",
-            email: email || "seu-email@gmail.com",
-            plan_id: db.profile.planId || "starter",
-            pages_created_count: db.profile.pagesCreatedCount || 0,
-            subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai",
-            ...payload
-          });
-        }
-      } catch (err: any) {
-        logSupabaseSync("Sincronizar atualização de perfil", err);
+      if (firstProfile?.id) {
+        await supabase.from("profiles").update(payload).eq("id", firstProfile.id);
+      } else {
+        await supabase.from("profiles").insert({
+          name: name || "Afiliado Autoridade",
+          email: email || "seu-email@gmail.com",
+          plan_id: db.profile.planId || "starter",
+          pages_created_count: db.profile.pagesCreatedCount || 0,
+          subdomain: db.profile.subdomain || "seu-SaaS.adscreator.ai",
+          ...payload
+        });
       }
+    } catch (err: any) {
+      logSupabaseSync("Sincronizar atualização de perfil", err);
     }
-
-    return res.json(db.profile);
-  } catch (err: any) {
-    console.error("Erro ao atualizar perfil:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao atualizar o perfil.");
   }
+
+  res.json(db.profile);
 });
 
 // Fetch All Generated Pages (Dashboard list)
@@ -1916,7 +1836,7 @@ app.get("/api/pages", async (req, res) => {
     const db = readDB();
     const localPages = db.pages || [];
 
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !supabase) {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       return res.json(localPages);
     }
 
@@ -2064,122 +1984,115 @@ app.post("/api/pages", async (req, res) => {
 
 // Update page details (The Drag-and-Drop Save UI endpoint)
 app.put("/api/pages/:id", (req, res) => {
-  try {
-    const { id } = req.params;
-    const updatedFields = req.body;
-    const db = readDB();
-    
-    const pIndex = db.pages.findIndex((x: any) => x.id === id);
-    if (pIndex !== -1) {
-      db.pages[pIndex] = {
-        ...db.pages[pIndex],
-        ...updatedFields,
-        ctr: db.pages[pIndex].views > 0 ? parseFloat(((db.pages[pIndex].clicks / db.pages[pIndex].views) * 100).toFixed(2)) : 0
-      };
-      writeDB(db);
-      addLog("Edição de Página", `A página "${db.pages[pIndex].title}" foi atualizada pelo editor visual.`);
+  const { id } = req.params;
+  const updatedFields = req.body;
+  const db = readDB();
+  
+  const pIndex = db.pages.findIndex((x: any) => x.id === id);
+  if (pIndex !== -1) {
+    db.pages[pIndex] = {
+      ...db.pages[pIndex],
+      ...updatedFields,
+      // Recalculate CTR dynamically
+      ctr: db.pages[pIndex].views > 0 ? parseFloat(((db.pages[pIndex].clicks / db.pages[pIndex].views) * 100).toFixed(2)) : 0
+    };
+    writeDB(db);
+    addLog("Edição de Página", `A página "${db.pages[pIndex].title}" foi atualizada pelo editor visual.`);
 
-      if (supabase) {
-        try {
-          const updatedPage = db.pages[pIndex];
-          const htmlContent = compilePageHtml(updatedPage, db);
-          supabase.from("pages").update({
-            title: updatedPage.title,
-            type: updatedPage.type,
-            html_content: htmlContent
-          }).eq("id", id).then(({ error }) => {
-            if (error) {
-              logSupabaseSync("Sincronizar edição de página", error);
-            } else {
-              console.log(`[Supabase Pages] Edição sincronizada com sucesso para id: ${id}`);
-            }
-          });
-        } catch (sbErr: any) {
-          logSupabaseSync("Sincronizar edição de página (exceção)", sbErr);
-        }
+    if (supabase) {
+      try {
+        const updatedPage = db.pages[pIndex];
+        const htmlContent = compilePageHtml(updatedPage, db);
+        supabase.from("pages").update({
+          title: updatedPage.title,
+          type: updatedPage.type,
+          html_content: htmlContent
+        }).eq("id", id).then(({ error }) => {
+          if (error) {
+            logSupabaseSync("Sincronizar edição de página", error);
+          } else {
+            console.log(`[Supabase Pages] Edição sincronizada com sucesso para id: ${id}`);
+          }
+        });
+      } catch (sbErr: any) {
+        logSupabaseSync("Sincronizar edição de página (exceção)", sbErr);
       }
-
-      return res.json(db.pages[pIndex]);
-    } else {
-      return sendApiError(res, 404, "Página não encontrada.");
     }
-  } catch (err: any) {
-    console.error("Erro ao atualizar página:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao atualizar a página.");
+
+    res.json(db.pages[pIndex]);
+  } else {
+    res.status(404).json({ error: "Página não encontrada." });
   }
 });
 
 // Duplicate Page
 app.post("/api/pages/:id/duplicate", (req, res) => {
-  try {
-    const { id } = req.params;
-    const db = readDB();
-    const page = db.pages.find((x: any) => x.id === id);
-    if (page) {
-      const limit = db.profile.planId === "starter" ? 10 : db.profile.planId === "pro" ? 50 : 999999;
-      const currentCount = db.pages.length;
-      if (currentCount >= limit) {
-        return sendApiError(res, 422, `Prezado usuário, você atingiu o limite de ${limit} páginas para o plano ${db.profile.planId.toUpperCase()}. Por favor, faça um upgrade.`);
-      }
-
-      const newSlug = `${page.slug}-copy-${Math.floor(Math.random() * 1000)}`;
-      const duplicate = {
-        ...page,
-        id: "p_" + Math.random().toString(36).substr(2, 9),
-        title: `${page.title} (Cópia)`,
-        slug: newSlug,
-        createdAt: new Date().toISOString(),
-        views: 0,
-        clicks: 0,
-        ctr: 0
-      };
-      db.pages.push(duplicate);
-      writeDB(db);
-      addLog("Duplicação de Página", `Cópia criada com sucesso da página: ${page.title}`);
-
-      if (supabase) {
-        try {
-          const htmlContent = compilePageHtml(duplicate, db);
-          const sbPage = {
-            id: duplicate.id,
-            title: duplicate.title,
-            slug: duplicate.slug,
-            type: duplicate.type,
-            status: duplicate.status || 'Publicada',
-            original_url: duplicate.originalUrl || null,
-            product_name: duplicate.productName || "Produto",
-            html_content: htmlContent,
-            created_at: duplicate.createdAt
-          };
-          supabase.from("pages").insert([sbPage]).then(({ error }) => {
-            if (error) {
-              logSupabaseSync("Duplicação de página", error);
-            } else {
-              console.log(`[Supabase Pages] Duplicação sincronizada no Supabase: ${duplicate.slug}`);
-            }
-          });
-        } catch (sbErr: any) {
-          logSupabaseSync("Duplicação de página (exceção)", sbErr);
-        }
-      }
-
-      return res.json(duplicate);
-    } else {
-      return sendApiError(res, 404, "Página não encontrada.");
+  const { id } = req.params;
+  const db = readDB();
+  const page = db.pages.find((x: any) => x.id === id);
+  if (page) {
+    // Check Plan Limits
+    const limit = db.profile.planId === "starter" ? 10 : db.profile.planId === "pro" ? 50 : 999999;
+    const currentCount = db.pages.length;
+    if (currentCount >= limit) {
+      return res.status(422).json({ error: `Prezado usuário, você atingiu o limite de ${limit} páginas para o plano ${db.profile.planId.toUpperCase()}. Por favor, faça um upgrade.` });
     }
-  } catch (err: any) {
-    console.error("Erro ao duplicar página:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao duplicar a página.");
+
+    const newSlug = `${page.slug}-copy-${Math.floor(Math.random() * 1000)}`;
+    const duplicate = {
+      ...page,
+      id: "p_" + Math.random().toString(36).substr(2, 9),
+      title: `${page.title} (Cópia)`,
+      slug: newSlug,
+      createdAt: new Date().toISOString(),
+      views: 0,
+      clicks: 0,
+      ctr: 0
+    };
+    db.pages.push(duplicate);
+    writeDB(db);
+    addLog("Duplicação de Página", `Cópia criada com sucesso da página: ${page.title}`);
+
+    if (supabase) {
+      try {
+        const htmlContent = compilePageHtml(duplicate, db);
+        const sbPage = {
+          id: duplicate.id,
+          title: duplicate.title,
+          slug: duplicate.slug,
+          type: duplicate.type,
+          status: duplicate.status || 'Publicada',
+          original_url: duplicate.originalUrl || null,
+          product_name: duplicate.productName || "Produto",
+          html_content: htmlContent,
+          created_at: duplicate.createdAt
+        };
+        supabase.from("pages").insert([sbPage]).then(({ error }) => {
+          if (error) {
+            logSupabaseSync("Duplicação de página", error);
+          } else {
+            console.log(`[Supabase Pages] Duplicação sincronizada no Supabase: ${duplicate.slug}`);
+          }
+        });
+      } catch (sbErr: any) {
+        logSupabaseSync("Duplicação de página (exceção)", sbErr);
+      }
+    }
+
+    res.json(duplicate);
+  } else {
+    res.status(404).json({ error: "Página não encontrada." });
   }
 });
 
 // Import Page from Backup or HTML metadata
 app.post("/api/pages/import", (req, res) => {
+  const { pageData } = req.body;
+  if (!pageData || !pageData.slug || !pageData.components) {
+    return res.status(400).json({ error: "Dados de importação inválidos ou incompletos." });
+  }
+
   try {
-    const { pageData } = req.body;
-    if (!pageData || !pageData.slug || !pageData.components) {
-      return sendApiError(res, 400, "Dados de importação inválidos ou incompletos.");
-    }
     const db = readDB();
 
     // Check Plan Limits
@@ -2246,37 +2159,32 @@ app.post("/api/pages/import", (req, res) => {
 
 // Delete Page
 app.delete("/api/pages/:id", (req, res) => {
-  try {
-    const { id } = req.params;
-    const db = readDB();
-    const pIdx = db.pages.findIndex((x: any) => x.id === id);
-    if (pIdx !== -1) {
-      const deletedName = db.pages[pIdx].title;
-      db.pages.splice(pIdx, 1);
-      writeDB(db);
-      addLog("Exclusão de Página", `A página "${deletedName}" foi excluída com sucesso.`);
+  const { id } = req.params;
+  const db = readDB();
+  const pIdx = db.pages.findIndex((x: any) => x.id === id);
+  if (pIdx !== -1) {
+    const deletedName = db.pages[pIdx].title;
+    db.pages.splice(pIdx, 1);
+    writeDB(db);
+    addLog("Exclusão de Página", `A página "${deletedName}" foi excluída com sucesso.`);
 
-      if (supabase) {
-        try {
-          supabase.from("pages").delete().eq("id", id).then(({ error }) => {
-            if (error) {
-              logSupabaseSync("Exclusão de página", error);
-            } else {
-              console.log(`[Supabase Pages] Remoção sincronizada no Supabase id: ${id}`);
-            }
-          });
-        } catch (sbErr: any) {
-          logSupabaseSync("Exclusão de página (exceção)", sbErr);
-        }
+    if (supabase) {
+      try {
+        supabase.from("pages").delete().eq("id", id).then(({ error }) => {
+          if (error) {
+            logSupabaseSync("Exclusão de página", error);
+          } else {
+            console.log(`[Supabase Pages] Remoção sincronizada no Supabase id: ${id}`);
+          }
+        });
+      } catch (sbErr: any) {
+        logSupabaseSync("Exclusão de página (exceção)", sbErr);
       }
-
-      return res.json({ success: true });
-    } else {
-      return sendApiError(res, 404, "Página não encontrada.");
     }
-  } catch (err: any) {
-    console.error("Erro ao excluir página:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao excluir a página.");
+
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: "Página não encontrada." });
   }
 });
 
@@ -2405,14 +2313,8 @@ app.post("/api/pages/generate", async (req, res) => {
 
     res.json(newPage);
   } catch (err: any) {
-    console.error("[generate] Falha na criação da página:", err);
-    const safeMessage = err?.message || "Houve um erro técnico de geração de IA com o Gemini.";
-    return res.status(500).json({
-      error: safeMessage,
-      success: false,
-      fallback: true,
-      message: "A geração não pôde ser concluída. Tente novamente em instantes."
-    });
+    console.error(err);
+    res.status(500).json({ error: "Houve um erro técnico de geração de IA com o Gemini. Detalhes: " + err.message });
   }
 });
 
@@ -2447,73 +2349,48 @@ app.post("/api/pages/:id/regenerate", async (req, res) => {
     addLog("Regeneração por IA", `Página "${existingPage.title}" reconstruída com sucesso pela IA mantendo todos os parâmetros de publicação.`);
     res.json(existingPage);
   } catch (err: any) {
-    console.error("[regenerate] Falha na regeneração da página:", err);
-    const safeMessage = err?.message || "Erro de IA durante regeneração.";
-    return res.status(500).json({
-      error: safeMessage,
-      success: false,
-      fallback: true,
-      message: "A regeneração não pôde ser concluída. Tente novamente em instantes."
-    });
+    console.error(err);
+    res.status(500).json({ error: "Erro de IA durante regeneração: " + err.message });
   }
 });
 
 // Update Pixel Integrations
 app.get("/api/integrations", (req, res) => {
-  try {
-    const db = readDB();
-    return res.json(db.integrations || {});
-  } catch (err: any) {
-    console.error("Erro ao buscar integrações:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao carregar integrações.");
-  }
+  const db = readDB();
+  res.json(db.integrations || {});
 });
 
 app.post("/api/integrations", (req, res) => {
-  try {
-    const db = readDB();
-    db.integrations = {
-      ...db.integrations,
-      ...req.body
-    };
-    writeDB(db);
-    addLog("Configuração de Pixel", "Pixels de Rastreamento (Meta, GA, GTM, TikTok) foram atualizados.");
-    return res.json(db.integrations);
-  } catch (err: any) {
-    console.error("Erro ao salvar integrações:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao salvar integrações.");
-  }
+  const db = readDB();
+  db.integrations = {
+    ...db.integrations,
+    ...req.body
+  };
+  writeDB(db);
+  addLog("Configuração de Pixel", "Pixels de Rastreamento (Meta, GA, GTM, TikTok) foram atualizados.");
+  res.json(db.integrations);
 });
 
 // Fetch Logs for activity timeline
 app.get("/api/logs", (req, res) => {
-  try {
-    const db = readDB();
-    return res.json(db.logs || []);
-  } catch (err: any) {
-    console.error("Erro ao buscar logs:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao carregar logs.");
-  }
+  const db = readDB();
+  res.json(db.logs || []);
 });
 
 // Trigger tracking of click on a generated page
 app.post("/api/pages/tracking/click", (req, res) => {
-  try {
-    const { id } = req.body;
-    const db = readDB();
-    const index = db.pages.findIndex((p: any) => p.id === id);
-    if (index !== -1) {
-      db.pages[index].clicks = (db.pages[index].clicks || 0) + 1;
-      const views = db.pages[index].views || 1;
-      db.pages[index].ctr = parseFloat(((db.pages[index].clicks / views) * 100).toFixed(2));
-      writeDB(db);
-      return res.json({ success: true, clicks: db.pages[index].clicks });
-    } else {
-      return sendApiError(res, 404, "Page not found");
-    }
-  } catch (err: any) {
-    console.error("Erro ao registrar clique:", err);
-    return sendApiError(res, 500, err?.message || "Erro interno ao registrar clique.");
+  const { id } = req.body;
+  const db = readDB();
+  const index = db.pages.findIndex((p: any) => p.id === id);
+  if (index !== -1) {
+    db.pages[index].clicks = (db.pages[index].clicks || 0) + 1;
+    // update ctr
+    const views = db.pages[index].views || 1;
+    db.pages[index].ctr = parseFloat(((db.pages[index].clicks / views) * 100).toFixed(2));
+    writeDB(db);
+    res.json({ success: true, clicks: db.pages[index].clicks });
+  } else {
+    res.status(404).json({ error: "Page not found" });
   }
 });
 
@@ -3412,7 +3289,7 @@ function compilePageHtml(page: any, db: any): string {
           </div>
         ` : '';
         return `
-          <header class="py-16 text-center border-b border-gray-800 bg-linear-to-b from-slate-900 to-slate-950 px-4">
+          <header class="py-16 text-center border-b border-gray-800 bg-gradient-to-b from-slate-900 to-slate-950 px-4">
             <div class="max-w-3xl mx-auto">
               ${logoHtml}
               <span class="inline-block px-4 py-1 text-xs font-semibold tracking-wider text-green-400 uppercase bg-green-950/40 border border-green-800 rounded-full mb-6 font-mono">${currentLoc.specialistOpinion}</span>
@@ -3472,8 +3349,8 @@ function compilePageHtml(page: any, db: any): string {
           const limitedImages = comp.content.images.slice(0, 6);
           const gridItemsHtml = limitedImages.map((img: string) => `
             <div class="bg-slate-900/80 border border-slate-800/80 hover:border-blue-500/50 p-6 rounded-2xl shadow-xl flex flex-col items-center justify-center transition-all hover:scale-[1.03] group relative overflow-hidden">
-              <div class="absolute inset-0 bg-linear-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-              <img src="${img}" alt="${comp.content.alt || page.productName}" class="max-h-55 object-contain rounded-xl drop-shadow-xl transition-transform group-hover:scale-105" />
+              <div class="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+              <img src="${img}" alt="${comp.content.alt || page.productName}" class="max-h-[220px] object-contain rounded-xl drop-shadow-xl transition-transform group-hover:scale-105" />
             </div>
           `).join('');
 
@@ -3820,7 +3697,7 @@ app.get("/:slug", (req, res, next) => {
 // VITE AND STATIC ASSETS HANDLING MIDDLEWARE
 // ----------------------------------------------------
 async function initializeViteAndStaticServing() {
-  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+  if (process.env.NODE_ENV !== "production") {
     console.log("Iniciando Vite em modo de desenvolvimento...");
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -3836,35 +3713,13 @@ async function initializeViteAndStaticServing() {
     });
   }
 
-  if (!process.env.VERCEL) {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`[AdsCreator AI Server] Servidor ativo em http://localhost:${PORT}`);
-    });
-  }
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[AdsCreator AI Server] Servidor ativo em http://localhost:${PORT}`);
+  });
 }
 
-initializeViteAndStaticServing().catch(err => {
-  console.error("Falha ao inicializar o servidor/vite:", err);
-});
-
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error("[API Error]", err);
-  if (res.headersSent) {
-    return next(err);
-  }
-
-  const status = err?.status || err?.statusCode || 500;
-  const message = err?.message || "Erro interno do servidor.";
-  return res.status(status).json({ error: message });
-});
-
-if (process.env.VERCEL) {
-  console.log("[Vercel] Exportando como função serverless...");
+if (!process.env.VERCEL) {
+  initializeViteAndStaticServing();
 }
 
 export default app;
-
-
-
-
-

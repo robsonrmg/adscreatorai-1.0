@@ -6,7 +6,6 @@ import AIPageSetup from './components/AIPageSetup';
 import EditorWorkspace from './components/EditorWorkspace';
 import ActivityLogPanel from './components/ActivityLogPanel';
 import UserProfileDropdown from './components/UserProfileDropdown';
-import SupabaseConnectionBanner from './components/SupabaseConnectionBanner';
 import { checkConnection } from './lib/supabase';
 import {
   Globe,
@@ -584,8 +583,8 @@ export default function App() {
                   activeTab === 'plans' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <CreditCard size={12} />
-                Plano & Domínios
+                <Globe size={12} />
+                Domínios & Pixels
               </button>
             </div>
 
@@ -609,9 +608,6 @@ export default function App() {
         
         {activeTab === 'pages' && (
           <div className="space-y-10">
-            
-            {/* BANNER DE STATUS DO SUPABASE */}
-            <SupabaseConnectionBanner status={supabaseStatus} onReverify={verifySupabase} />
             
             {/* ANALYTICS SUMMARY PANEL */}
             <AnalyticsSummary pages={pages} />
