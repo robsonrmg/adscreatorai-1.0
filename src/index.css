@@ -1,1 +1,3 @@
 @import "tailwindcss";
+// @ts-expect-error - Tailwind v4 side-effect import
+import './index.css';
